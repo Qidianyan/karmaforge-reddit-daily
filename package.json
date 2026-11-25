@@ -1,0 +1,38 @@
+{
+  "name": "karmaforge-daily",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "KarmaForge: Daily Thread Architect — a 60-second Reddit Devvit Web daily puzzle game where players connect two Reddit posts by forging a 4-link subreddit thread while dodging off-topic red herrings.",
+  "scripts": {
+    "dev:server": "tsx watch src/server/server-local.ts",
+    "dev:client": "vite --port 5173",
+    "dev": "tsx src/server/server-local.ts",
+    "dev:devvit": "vite build --watch",
+    "build:client": "vite build",
+    "build:server": "node scripts/build-server.mjs",
+    "build": "npm run build:client && npm run build:server",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "tsx scripts/e2e-verify.ts"
+  },
+  "dependencies": {
+    "@devvit/web": "0.15.4",
+    "express": "^4.21.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.25.1",
+    "playwright-core": "^1.52.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.1",
+    "vitest": "^3.0.9"
+  }
+}

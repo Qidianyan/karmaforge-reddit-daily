@@ -1,0 +1,52 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "karmaforge-daily",
+  "post": {
+    "dir": "dist/client",
+    "entrypoints": {
+      "default": {
+        "entry": "index.html",
+        "height": "tall",
+        "inline": true
+      }
+    }
+  },
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "permissions": {
+    "redis": true,
+    "reddit": {
+      "enable": true,
+      "scope": "user"
+    }
+  },
+  "triggers": {
+    "onAppInstall": "/internal/on-app-install"
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Post KarmaForge Daily Thread",
+        "description": "Publish today's KarmaForge interactive daily thread puzzle",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/post-create",
+        "postFilter": "none"
+      }
+    ]
+  },
+  "scheduler": {
+    "tasks": {
+      "daily-puzzle-post": {
+        "endpoint": "/internal/cron/daily-post",
+        "cron": "0 0 * * *"
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run build",
+    "dev": "npm run dev:devvit"
+  }
+}
