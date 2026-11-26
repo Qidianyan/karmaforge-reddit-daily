@@ -48,5 +48,8 @@
   "scripts": {
     "build": "npm run build",
     "dev": "npm run dev:devvit"
+  },
+  "dev": {
+    "subreddit": "karmaforge_daily_dev"
   }
 }
