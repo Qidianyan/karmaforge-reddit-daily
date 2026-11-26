@@ -3,11 +3,13 @@ import {
   applyStreakWin,
   buildPlayerStreak,
   buildSeedCommunityNominees,
+  computeCrowdConsensus,
   computeLeaderboardSortKey,
   computeSpeedCombo,
   generateSpoilerFreeShareMarkdown,
   getArchiveDateKeys,
   getEffectiveCurrentStreak,
+  getMaxAttempts,
   getPuzzleForDate,
   getTomorrowUtcDateKey,
   getUtcDateKey,
@@ -17,6 +19,7 @@ import {
   sortCommunitySubmissions,
   toPublicPuzzlePayload,
   validateCommunityPuzzleDraft,
+  validateIronForgeConstraints,
   validateSubmissionCardIds,
 } from '../shared/index.js';
 import type {
@@ -135,6 +138,7 @@ async function readOrInitDailyProgress(
     dateKey,
     puzzleId,
     status: 'playing',
+    hardMode: false,
     attempts: [],
     hintsUsed: 0,
     startedAt: new Date().toISOString(),
@@ -165,6 +169,15 @@ export async function readDailyStats(store: KvStore, dateKey: string): Promise<D
   const totalSolves = Number.parseInt(stats.totalSolves ?? '0', 10) || 0;
   const totalMovesSum = Number.parseInt(stats.totalMovesSum ?? '0', 10) || 0;
   const totalSecondsSum = Number.parseInt(stats.totalSecondsSum ?? '0', 10) || 0;
+  const ironForgeSolves = Number.parseInt(stats.ironSolves ?? '0', 10) || 0;
+  const moveDistribution = {
+    moves1: Number.parseInt(stats.moves_1 ?? '0', 10) || 0,
+    moves2: Number.parseInt(stats.moves_2 ?? '0', 10) || 0,
+    moves3: Number.parseInt(stats.moves_3 ?? '0', 10) || 0,
+    moves4: Number.parseInt(stats.moves_4 ?? '0', 10) || 0,
+    moves5: Number.parseInt(stats.moves_5 ?? '0', 10) || 0,
+    losses: Number.parseInt(stats.losses ?? '0', 10) || 0,
+  };
 
   return {
     totalPlayers,
@@ -172,6 +185,8 @@ export async function readDailyStats(store: KvStore, dateKey: string): Promise<D
     solveRatePct: totalPlayers > 0 ? Math.round((totalSolves / totalPlayers) * 100) : 0,
     avgMoves: totalSolves > 0 ? Number((totalMovesSum / totalSolves).toFixed(1)) : null,
     avgSeconds: totalSolves > 0 ? Math.round(totalSecondsSum / totalSolves) : null,
+    ironForgeSolves,
+    moveDistribution,
   };
 }
 
@@ -183,6 +198,7 @@ interface StoredLbMeta {
   score: number;
   flairTitle: string;
   streak: number;
+  hardMode?: boolean;
   completedAt: string;
 }
 
@@ -214,6 +230,7 @@ export async function readDailyLeaderboard(
         score: meta.score,
         flairTitle: meta.flairTitle,
         streak: meta.streak,
+        hardMode: Boolean(meta.hardMode),
         completedAt: meta.completedAt,
       });
     } catch {
@@ -259,6 +276,18 @@ export async function buildGameState(
 
   const isConcluded = progress.status !== 'playing';
   const revealedHints = puzzle.hints.slice(0, Math.min(progress.hintsUsed, puzzle.hints.length));
+  const crowdConsensus = isConcluded
+    ? computeCrowdConsensus({
+        difficulty: puzzle.difficulty,
+        liveDistribution: stats.moveDistribution,
+        ironForgeSolves: stats.ironForgeSolves,
+        playerStatus: progress.status,
+        playerMoves: progress.attempts.length,
+        playerElapsedSeconds: progress.elapsedSeconds,
+        playerHardMode: Boolean(progress.hardMode),
+      })
+    : null;
+
   const shareMarkdown = isConcluded
     ? generateSpoilerFreeShareMarkdown({
         puzzle: publicPuzzle,
@@ -267,6 +296,8 @@ export async function buildGameState(
         elapsedSeconds: progress.elapsedSeconds,
         hintsUsed: progress.hintsUsed,
         streak: streakInfo.playerStreak,
+        hardMode: Boolean(progress.hardMode),
+        crowdConsensus,
       })
     : null;
 
@@ -282,6 +313,7 @@ export async function buildGameState(
     revealedHints,
     streak: streakInfo.playerStreak,
     stats,
+    crowdConsensus,
     leaderboard,
     recentShares,
     solutionReveal: isConcluded ? buildSolutionReveal(puzzle) : null,
@@ -308,6 +340,18 @@ export async function handleGuessSubmission(
   const progress = await readOrInitDailyProgress(store, actor.userId, activeDateKey, puzzle.id);
   if (progress.status !== 'playing') {
     return buildGameState(store, bridge, actor, activeDateKey, now);
+  }
+
+  // Lock Iron Forge (Hard Mode) choice on Attempt 1 so players cannot toggle mid-game.
+  if (progress.attempts.length === 0) {
+    progress.hardMode = Boolean(body.hardMode);
+  }
+
+  if (progress.hardMode && progress.attempts.length > 0) {
+    const ironError = validateIronForgeConstraints(progress.attempts, body.cardIds);
+    if (ironError) {
+      throw new Error(ironError);
+    }
   }
 
   // Register player participation once per UTC day.
@@ -341,6 +385,8 @@ export async function handleGuessSubmission(
       ? Math.round(body.elapsedSeconds)
       : computedElapsed;
 
+  const maxAttempts = getMaxAttempts(progress.hardMode);
+
   if (graded.isSolved) {
     progress.status = 'won';
     progress.completedAt = now.toISOString();
@@ -369,6 +415,7 @@ export async function handleGuessSubmission(
       elapsedSeconds,
       hintsUsed: progress.hintsUsed,
       currentStreak: effectiveStreakNum,
+      hardMode: Boolean(progress.hardMode),
     });
     progress.score = combo.finalKarma;
     progress.comboMultiplier = combo.multiplier;
@@ -388,9 +435,14 @@ export async function handleGuessSubmission(
       lastSolvedDate: updatedStreak.lastSolvedDate,
     });
 
+    const moveBucket = Math.max(1, Math.min(MAX_ATTEMPTS, progress.attempts.length));
     await store.hIncrBy(dayStatsKey(activeDateKey), 'totalSolves', 1);
     await store.hIncrBy(dayStatsKey(activeDateKey), 'totalMovesSum', progress.attempts.length);
     await store.hIncrBy(dayStatsKey(activeDateKey), 'totalSecondsSum', elapsedSeconds);
+    await store.hIncrBy(dayStatsKey(activeDateKey), `moves_${moveBucket}`, 1);
+    if (progress.hardMode) {
+      await store.hIncrBy(dayStatsKey(activeDateKey), 'ironSolves', 1);
+    }
 
     const sortKey = computeLeaderboardSortKey({
       moves: progress.attempts.length,
@@ -407,16 +459,18 @@ export async function handleGuessSubmission(
       score: progress.score,
       flairTitle: effectiveAfterWin.flair.title,
       streak: effectiveAfterWin.currentStreak,
+      hardMode: Boolean(progress.hardMode),
       completedAt: progress.completedAt,
     };
     await store.hSet(dayLeaderboardMetaKey(activeDateKey), {
       [actor.userId]: JSON.stringify(lbMeta),
     });
-  } else if (progress.attempts.length >= MAX_ATTEMPTS) {
+  } else if (progress.attempts.length >= maxAttempts) {
     progress.status = 'lost';
     progress.completedAt = now.toISOString();
     progress.elapsedSeconds = elapsedSeconds;
     progress.score = 0;
+    await store.hIncrBy(dayStatsKey(activeDateKey), 'losses', 1);
   }
 
   await store.set(userDayKey(actor.userId, activeDateKey), JSON.stringify(progress));
@@ -511,12 +565,14 @@ export async function buildArchiveList(
 
       let status: ArchiveEditionSummary['status'] = 'unplayed';
       let movesUsed = 0;
+      let hardMode = false;
 
       if (rawProgress) {
         try {
           const parsed = JSON.parse(rawProgress) as PlayerDailyProgress;
           if (parsed.puzzleId === puzzle.id) {
             movesUsed = parsed.attempts.length;
+            hardMode = Boolean(parsed.hardMode);
             status = parsed.attempts.length === 0 && parsed.status === 'playing' ? 'unplayed' : parsed.status;
           }
         } catch {
@@ -533,6 +589,7 @@ export async function buildArchiveList(
         title: puzzle.title,
         difficulty: puzzle.difficulty,
         status,
+        hardMode,
         movesUsed,
         communitySolves: stats.totalSolves,
       };

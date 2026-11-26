@@ -1,11 +1,74 @@
 import type {
   AttemptRecord,
+  CrowdConsensusBucket,
+  CrowdConsensusSummary,
+  GameStatus,
   GradedSlot,
+  MoveDistribution,
   PuzzleDefinition,
+  PuzzleDifficulty,
   SlotVerdict,
   SpeedComboBreakdown,
 } from './types.js';
-import { CARD_POOL_SIZE, MAX_ATTEMPTS, SLOT_COUNT } from './types.js';
+import { CARD_POOL_SIZE, IRON_FORGE_MAX_ATTEMPTS, MAX_ATTEMPTS, SLOT_COUNT } from './types.js';
+
+export function getMaxAttempts(hardMode?: boolean): number {
+  return hardMode ? IRON_FORGE_MAX_ATTEMPTS : MAX_ATTEMPTS;
+}
+
+export const EMPTY_MOVE_DISTRIBUTION: MoveDistribution = {
+  moves1: 0,
+  moves2: 0,
+  moves3: 0,
+  moves4: 0,
+  moves5: 0,
+  losses: 0,
+};
+
+/**
+ * Validates Iron Forge (Hard Mode) clue discipline on subsequent attempts:
+ * 1) Previously locked Exact slots must stay in place.
+ * 2) Previously revealed Misplaced bridge links must be reused and moved out of rejected slots.
+ * 3) Previously exposed Red Herrings cannot be replayed.
+ */
+export function validateIronForgeConstraints(
+  attempts: AttemptRecord[],
+  nextCardIds: string[],
+): string | null {
+  if (attempts.length === 0) {
+    return null;
+  }
+  const known = extractKnownCardStatuses(attempts);
+  const nextSet = new Set(nextCardIds);
+
+  for (let idx = 0; idx < SLOT_COUNT; idx += 1) {
+    const lockedId = known.lockedSlots[idx];
+    if (lockedId && nextCardIds[idx] !== lockedId) {
+      return `Iron Forge rule: Keep confirmed Exact link locked in Slot #${idx + 1}.`;
+    }
+  }
+
+  for (const id of nextCardIds) {
+    if (known.knownWrongIds.has(id)) {
+      return 'Iron Forge rule: Eliminated Red Herrings cannot be replayed.';
+    }
+  }
+
+  for (const [cardId, rejectedSlots] of Object.entries(known.misplacedSlotsByCard)) {
+    const alreadyLocked = known.lockedSlots.includes(cardId);
+    if (alreadyLocked) continue;
+
+    if (!nextSet.has(cardId)) {
+      return 'Iron Forge rule: Every revealed Misplaced bridge link must stay in your chain.';
+    }
+    const newSlotIdx = nextCardIds.indexOf(cardId);
+    if (rejectedSlots.includes(newSlotIdx)) {
+      return `Iron Forge rule: Move that Misplaced link out of rejected Slot #${newSlotIdx + 1}.`;
+    }
+  }
+
+  return null;
+}
 
 export interface GradeResult {
   slots: [GradedSlot, GradedSlot, GradedSlot, GradedSlot];
@@ -98,6 +161,7 @@ export function computeSpeedCombo(params: {
   elapsedSeconds: number;
   hintsUsed: number;
   currentStreak: number;
+  hardMode?: boolean;
 }): SpeedComboBreakdown {
   const baseScore = computeSolveScore(params);
   let speedMult = 1.0;
@@ -115,12 +179,13 @@ export function computeSpeedCombo(params: {
   }
 
   const streakBonusPct = Math.min(50, Math.max(0, params.currentStreak) * 5);
-  const combinedMult = Number((speedMult * (1 + streakBonusPct / 100)).toFixed(2));
+  const ironMult = params.hardMode ? 1.25 : 1.0;
+  const combinedMult = Number((speedMult * (1 + streakBonusPct / 100) * ironMult).toFixed(2));
   const finalKarma = Math.round(baseScore * combinedMult);
 
   return {
     multiplier: combinedMult,
-    tierLabel,
+    tierLabel: params.hardMode ? `Iron ${tierLabel}` : tierLabel,
     baseScore,
     streakBonusPct,
     finalKarma,
@@ -283,4 +348,125 @@ export function extractKnownCardStatuses(attempts: AttemptRecord[]): {
   }
 
   return { lockedSlots, knownWrongIds, misplacedSlotsByCard };
+}
+
+/**
+ * Calibrated Dirichlet cold-start priors (N0 = 40) by puzzle difficulty tier.
+ * Blended deterministically with real Redis move counts — zero random jitter.
+ */
+const CROWD_PRIORS_BY_DIFFICULTY: Record<
+  PuzzleDifficulty,
+  readonly [number, number, number, number, number, number]
+> = {
+  Mild: [7, 15, 11, 4, 2, 1],
+  Spicy: [4, 11, 13, 7, 3, 2],
+  'Galaxy Brain': [2, 7, 12, 10, 5, 4],
+};
+
+const BUCKET_META: ReadonlyArray<{ key: CrowdConsensusBucket['key']; label: string }> = [
+  { key: '1', label: '1 Move' },
+  { key: '2', label: '2 Moves' },
+  { key: '3', label: '3 Moves' },
+  { key: '4', label: '4 Moves' },
+  { key: '5', label: '5 Moves' },
+  { key: 'X', label: 'Locked' },
+];
+
+/**
+ * Computes Global Crowd Consensus move histogram & deterministic "Sharper than XX% of r/KarmaForge"
+ * percentile by blending real Redis telemetry with calibrated cold-start priors.
+ */
+export function computeCrowdConsensus(params: {
+  difficulty: PuzzleDifficulty;
+  liveDistribution?: MoveDistribution;
+  ironForgeSolves?: number;
+  playerStatus: GameStatus;
+  playerMoves: number;
+  playerElapsedSeconds: number | null;
+  playerHardMode?: boolean;
+}): CrowdConsensusSummary {
+  const prior = CROWD_PRIORS_BY_DIFFICULTY[params.difficulty];
+  const dist = params.liveDistribution ?? EMPTY_MOVE_DISTRIBUTION;
+  const liveCounts = [
+    Math.max(0, Math.floor(dist.moves1)),
+    Math.max(0, Math.floor(dist.moves2)),
+    Math.max(0, Math.floor(dist.moves3)),
+    Math.max(0, Math.floor(dist.moves4)),
+    Math.max(0, Math.floor(dist.moves5)),
+    Math.max(0, Math.floor(dist.losses)),
+  ];
+
+  const priorSampleSize = prior.reduce((acc, v) => acc + v, 0);
+  const liveSampleSize = liveCounts.reduce((acc, v) => acc + v, 0);
+  const blended = prior.map((p, idx) => p + (liveCounts[idx] ?? 0));
+  const totalBlended = Math.max(1, blended.reduce((acc, v) => acc + v, 0));
+
+  const playerBucketIdx =
+    params.playerStatus === 'won'
+      ? Math.max(0, Math.min(4, Math.round(params.playerMoves) - 1))
+      : params.playerStatus === 'lost'
+        ? 5
+        : -1;
+
+  const buckets: CrowdConsensusBucket[] = BUCKET_META.map((meta, idx) => {
+    const count = blended[idx] ?? 0;
+    return {
+      key: meta.key,
+      label: meta.label,
+      count,
+      liveCount: liveCounts[idx] ?? 0,
+      pct: Math.round((count / totalBlended) * 100),
+      isPlayerBucket: idx === playerBucketIdx,
+    };
+  });
+
+  let sharperThanPct = 0;
+  let headline: string;
+
+  if (params.playerStatus === 'won' && playerBucketIdx >= 0 && playerBucketIdx <= 4) {
+    let worseCount = 0;
+    for (let idx = playerBucketIdx + 1; idx < blended.length; idx += 1) {
+      worseCount += blended[idx] ?? 0;
+    }
+    const clampedElapsed = Math.max(5, Math.min(120, params.playerElapsedSeconds ?? 45));
+    const ironTieBoost = params.playerHardMode ? 0.12 : 0;
+    const withinBucketFraction = Math.max(
+      0.15,
+      Math.min(0.85, 0.5 + (45 - clampedElapsed) / 140 + ironTieBoost),
+    );
+    const rawPct =
+      ((worseCount + (blended[playerBucketIdx] ?? 0) * withinBucketFraction) / totalBlended) * 100;
+    sharperThanPct = Math.max(1, Math.min(99, Math.round(rawPct)));
+    headline = `Sharper than ${sharperThanPct}% of r/KarmaForge`;
+  } else {
+    const solveRatePct = Math.round(((totalBlended - (blended[5] ?? 0)) / totalBlended) * 100);
+    headline = `${solveRatePct}% of r/KarmaForge forged today’s chain`;
+  }
+
+  return {
+    buckets,
+    sharperThanPct,
+    headline,
+    liveSampleSize,
+    priorSampleSize,
+    ironForgeSolves: Math.max(0, Math.floor(params.ironForgeSolves ?? 0)),
+  };
+}
+
+export const MICRO_GUIDE_STORAGE_KEY = 'karmaforge:micro_guide_dismissed:v1';
+
+export function shouldShowMicroGuide(params: {
+  dismissed: boolean;
+  isPlaying: boolean;
+  activeTab: 'daily' | 'community';
+  attemptsCount: number;
+  placedCount: number;
+}): boolean {
+  return (
+    !params.dismissed &&
+    params.isPlaying &&
+    params.activeTab === 'daily' &&
+    params.attemptsCount === 0 &&
+    params.placedCount === 0
+  );
 }

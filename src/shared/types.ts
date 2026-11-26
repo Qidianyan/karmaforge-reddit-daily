@@ -124,6 +124,7 @@ export interface PlayerDailyProgress {
   dateKey: string;
   puzzleId: string;
   status: GameStatus;
+  hardMode?: boolean;
   attempts: AttemptRecord[];
   hintsUsed: number;
   startedAt: string;
@@ -149,7 +150,35 @@ export interface LeaderboardEntry {
   score: number;
   flairTitle: string;
   streak: number;
+  hardMode?: boolean;
   completedAt: string;
+}
+
+export interface MoveDistribution {
+  moves1: number;
+  moves2: number;
+  moves3: number;
+  moves4: number;
+  moves5: number;
+  losses: number;
+}
+
+export interface CrowdConsensusBucket {
+  key: '1' | '2' | '3' | '4' | '5' | 'X';
+  label: string;
+  count: number;
+  liveCount: number;
+  pct: number;
+  isPlayerBucket: boolean;
+}
+
+export interface CrowdConsensusSummary {
+  buckets: CrowdConsensusBucket[];
+  sharperThanPct: number;
+  headline: string;
+  liveSampleSize: number;
+  priorSampleSize: number;
+  ironForgeSolves: number;
 }
 
 export interface DailyCommunityStats {
@@ -158,6 +187,8 @@ export interface DailyCommunityStats {
   solveRatePct: number;
   avgMoves: number | null;
   avgSeconds: number | null;
+  ironForgeSolves?: number;
+  moveDistribution?: MoveDistribution;
 }
 
 export interface SharedCommentItem {
@@ -181,6 +212,7 @@ export interface GameStateResponse {
   revealedHints: TopCommentHint[];
   streak: PlayerStreak;
   stats: DailyCommunityStats;
+  crowdConsensus: CrowdConsensusSummary | null;
   leaderboard: LeaderboardEntry[];
   recentShares: SharedCommentItem[];
   solutionReveal: PuzzleSolutionReveal | null;
@@ -191,6 +223,7 @@ export interface GuessRequestBody {
   dateKey?: string;
   cardIds: string[];
   elapsedSeconds?: number;
+  hardMode?: boolean;
 }
 
 export interface HintRequestBody {
@@ -219,6 +252,7 @@ export interface ArchiveEditionSummary {
   title: string;
   difficulty: PuzzleDifficulty;
   status: GameStatus | 'unplayed';
+  hardMode?: boolean;
   movesUsed: number;
   communitySolves: number;
 }
@@ -307,5 +341,6 @@ export interface CommunityVoteResponse {
 }
 
 export const MAX_ATTEMPTS = 5;
+export const IRON_FORGE_MAX_ATTEMPTS = 3;
 export const SLOT_COUNT = 4;
 export const CARD_POOL_SIZE = 6;

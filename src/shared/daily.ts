@@ -79,8 +79,8 @@ export function deterministicShuffle<T>(items: readonly T[], seedStr: string): T
 }
 
 /**
- * Fixed deterministic order across all 30 curated puzzles so every 30-day rolling window
- * anywhere in the calendar year visits all 30 unique puzzles with zero repeats.
+ * Fixed deterministic order across all 60 curated puzzles so every 60-day rolling window
+ * anywhere in the calendar year visits all 60 unique puzzles with zero repeats.
  */
 const CURATED_CYCLE_ORDER: readonly number[] = deterministicShuffle(
   PUZZLES.map((_, idx) => idx),
@@ -88,7 +88,7 @@ const CURATED_CYCLE_ORDER: readonly number[] = deterministicShuffle(
 );
 
 /**
- * Deterministically maps any UTC date (all 365+ days/year) to one of our 30 curated puzzles.
+ * Deterministically maps any UTC date (all 365+ days/year) to one of our 60 curated puzzles.
  */
 export function getPuzzleForDate(dateKey: string): {
   puzzle: PuzzleDefinition;
@@ -140,8 +140,8 @@ export function toPublicPuzzlePayload(
 }
 
 /**
- * Generates the latest 30 distinct daily editions ending on `todayUtc` so Archive Browser
- * covers all 30 handcrafted puzzles with authentic dates!
+ * Generates the latest 60 distinct daily editions ending on `todayUtc` so Archive Browser
+ * covers all 60 handcrafted puzzles with authentic dates!
  */
 export function getArchiveDateKeys(todayUtc: string): string[] {
   const dates: string[] = [];

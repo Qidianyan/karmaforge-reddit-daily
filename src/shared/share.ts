@@ -1,6 +1,12 @@
-import { computeSpeedCombo } from './engine.js';
-import type { AttemptRecord, GameStatus, PlayerStreak, PublicPuzzlePayload, SlotVerdict } from './types.js';
-import { MAX_ATTEMPTS } from './types.js';
+import { computeSpeedCombo, getMaxAttempts } from './engine.js';
+import type {
+  AttemptRecord,
+  CrowdConsensusSummary,
+  GameStatus,
+  PlayerStreak,
+  PublicPuzzlePayload,
+  SlotVerdict,
+} from './types.js';
 
 const VERDICT_EMOJI: Record<SlotVerdict, string> = {
   exact: '🟩',
@@ -36,14 +42,19 @@ export function generateSpoilerFreeShareMarkdown(params: {
   elapsedSeconds: number | null;
   hintsUsed: number;
   streak: Pick<PlayerStreak, 'currentStreak' | 'flair'>;
+  hardMode?: boolean;
+  crowdConsensus?: CrowdConsensusSummary | null;
 }): string {
-  const { puzzle, status, attempts, elapsedSeconds, hintsUsed, streak } = params;
+  const { puzzle, status, attempts, elapsedSeconds, hintsUsed, streak, hardMode, crowdConsensus } =
+    params;
   const issueTag = `#${padIssueNumber(puzzle.issueNumber)}`;
-  const moveScore = status === 'won' ? `${attempts.length}/${MAX_ATTEMPTS}` : `X/${MAX_ATTEMPTS}`;
+  const maxAttempts = getMaxAttempts(hardMode);
+  const moveScore = status === 'won' ? `${attempts.length}/${maxAttempts}` : `X/${maxAttempts}`;
   const gridLines = attempts.map(formatAttemptRowEmoji);
   const lastRow = gridLines[gridLines.length - 1] ?? '⬛⬛⬛⬛';
   const timeText = formatDurationCompact(elapsedSeconds);
   const hintSuffix = hintsUsed > 0 ? ` | Clue x${hintsUsed}` : '';
+  const ironTag = hardMode && status === 'won' ? ' · ⚒️ IRON FORGE' : hardMode ? ' · Iron Forge' : '';
   const streakPart =
     streak.currentStreak > 0
       ? `🔥 ${streak.currentStreak}-day streak (${streak.flair.title})`
@@ -56,15 +67,21 @@ export function generateSpoilerFreeShareMarkdown(params: {
           elapsedSeconds: elapsedSeconds ?? 60,
           hintsUsed,
           currentStreak: streak.currentStreak,
+          hardMode,
         })
       : null;
 
+  const percentileSuffix =
+    status === 'won' && crowdConsensus && crowdConsensus.sharperThanPct > 0
+      ? ` | 🏆 ${crowdConsensus.headline}`
+      : '';
+
   const comboLine = combo
-    ? `> ⚡ **${combo.multiplier.toFixed(2)}x ${combo.tierLabel}** | **${combo.finalKarma} Karma**`
+    ? `> ⚡ **${combo.multiplier.toFixed(2)}x ${combo.tierLabel}** | **${combo.finalKarma} Karma**${percentileSuffix}`
     : '> 🔒 Thread locked for today, try tomorrow’s Community Forge winner!';
 
   return [
-    `${lastRow} **KarmaForge ${issueTag}** | ${moveScore} moves (${timeText}${hintSuffix}) | ${streakPart}`,
+    `${lastRow} **KarmaForge ${issueTag}**${ironTag} | ${moveScore} moves (${timeText}${hintSuffix}) | ${streakPart}`,
     `*${puzzle.category}: "${puzzle.title}"*`,
     comboLine,
     '',

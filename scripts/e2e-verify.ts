@@ -9,6 +9,7 @@ import { getPuzzleForDate, getUtcDateKey } from '../src/shared/index.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const materialsDir = path.resolve(projectRoot, '../../materials');
+const shotsDir = path.resolve(projectRoot, '../../shots');
 
 function findChromiumExecutable(): string {
   const candidates = [
@@ -43,6 +44,7 @@ async function waitForHealth(baseUrl: string, timeoutMs = 12000): Promise<void> 
 
 async function main(): Promise<void> {
   fs.mkdirSync(materialsDir, { recursive: true });
+  fs.mkdirSync(shotsDir, { recursive: true });
 
   const port = 4289;
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -140,20 +142,52 @@ async function main(): Promise<void> {
         );
       }
 
-      // Screenshot 1: Clean Dark Terminal Daily Board (760x620)
+      // Verify 3-second zero-friction micro-guidance appears on fresh load!
+      await page.getByTestId('micro-guide-cue').waitFor({ state: 'visible' });
+      const guidedCount = await page.locator('[data-guided="true"]').count();
+      if (guidedCount !== 1) {
+        throw new Error(`Expected 1 warm-gold guided bridge card on first visit, found ${guidedCount}`);
+      }
+
+      // Screenshot 1: Clean Dark Terminal Daily Board (760x620) with Micro-Guide & Iron Forge Toggle
       await page.screenshot({
         path: path.join(materialsDir, '01_daily_board.png'),
         fullPage: true,
       });
+      await page.screenshot({
+        path: path.join(shotsDir, 'after_daily_board.png'),
+        fullPage: true,
+      });
 
-      // Test Keyboard Speedflow: press 'h' to reveal Top Comment Clue #1, press '1' then 'z' to verify Undo!
+      // Test Keyboard Speedflow: press 'h' to reveal Top Comment Clue #1, press '1' -> micro-guide vanishes & persists!
       await page.keyboard.press('h');
       await page.getByTestId('hint-card-0').waitFor({ state: 'visible' });
 
       await page.keyboard.press('1');
       await page.waitForTimeout(80);
+      const guideAfterFirstKey = await page.getByTestId('micro-guide-cue').count();
+      if (guideAfterFirstKey !== 0) {
+        throw new Error('Expected 3-second micro-guidance to disappear immediately after key 1');
+      }
       await page.keyboard.press('z');
       await page.waitForTimeout(80);
+      const guideAfterUndo = await page.getByTestId('micro-guide-cue').count();
+      const persistedDismiss = await page.evaluate(() =>
+        window.localStorage.getItem('karmaforge:micro_guide_dismissed:v1'),
+      );
+      if (guideAfterUndo !== 0 || persistedDismiss !== '1') {
+        throw new Error(
+          `Expected micro-guide dismissal to persist (count=${guideAfterUndo}, storage=${persistedDismiss})`,
+        );
+      }
+
+      // Toggle Iron Forge (Hard Mode) ON before Attempt 1 -> 3 attempts max + strict clues
+      await page.getByTestId('iron-forge-toggle').click();
+      await page.waitForTimeout(80);
+      const attemptsLabelText = await page.getByTestId('attempts-label').textContent();
+      if (!attemptsLabelText?.includes('Iron Forge 0/3')) {
+        throw new Error(`Expected Iron Forge 0/3 label after toggle, got "${attemptsLabelText}"`);
+      }
 
       // Compute exact card IDs for today's UTC puzzle to execute both a partial guess AND winning solve.
       const todayUtc = getUtcDateKey();
@@ -173,15 +207,19 @@ async function main(): Promise<void> {
       await page.getByTestId('feedback-banner').waitFor({ state: 'visible' });
       await page.waitForTimeout(480);
 
-      // Verify exact / misplaced / wrong verdicts on the 4 slots!
+      // Verify exact / misplaced / wrong verdicts on the 4 slots & Iron Forge lock + banned red herring!
       const verdicts = await Promise.all(
         [0, 1, 2, 3].map((i) => page.getByTestId(`thread-slot-${i}`).getAttribute('data-verdict')),
       );
       if (verdicts.join(',') !== 'exact,misplaced,wrong,exact') {
         throw new Error(`Expected verdicts exact,misplaced,wrong,exact; got ${verdicts.join(',')}`);
       }
+      const ironLockedAfterA1 = await page.getByTestId('iron-forge-checkbox').isDisabled();
+      if (!ironLockedAfterA1) {
+        throw new Error('Expected Iron Forge toggle to be locked after Attempt 1');
+      }
 
-      // Screenshot 2: Midgame Graded Feedback (Emerald + Amber + Charcoal + Top Comment Clue + Pixel Badge Wall)
+      // Screenshot 2: Midgame Graded Feedback (Emerald + Amber + Charcoal + Iron Forge + Top Comment Clue)
       await page.screenshot({
         path: path.join(materialsDir, '02_midgame_feedback.png'),
         fullPage: true,
@@ -189,19 +227,38 @@ async function main(): Promise<void> {
 
       // Clear unlocked slots (keeps Slot 0 & Slot 3 locked as Exact Emerald!)
       await page.getByTestId('clear-unlocked-btn').click();
+      // Once cleared from Slot 3, the exposed Red Herring must be disabled/banned in Iron Forge!
+      const redHerringDisabled = await page.getByTestId(`bridge-card-${redHerring.id}`).isDisabled();
+      if (!redHerringDisabled) {
+        throw new Error('Expected eliminated Red Herring card to be disabled in Iron Forge after clearing');
+      }
       await page.getByTestId(`bridge-card-${s1}`).click();
       await page.getByTestId(`bridge-card-${s2}`).click();
 
-      // Forge the winning 4-link thread!
+      // Forge the winning 4-link thread in Iron Forge mode!
       await page.getByTestId('forge-submit-btn').click();
       await page.getByTestId('share-markdown-preview').waitFor({ state: 'visible', timeout: 5000 });
       await page.waitForTimeout(280);
+
+      // Verify Iron Forge victory badge & Global Crowd Consensus % histogram!
+      await page.getByTestId('iron-forge-badge').waitFor({ state: 'visible' });
+      await page.getByTestId('crowd-consensus-panel').waitFor({ state: 'visible' });
+      const consensusHeadline = await page.getByTestId('consensus-percentile-pill').textContent();
+      if (!consensusHeadline?.includes('Sharper than') || !consensusHeadline.includes('r/KarmaForge')) {
+        throw new Error(`Unexpected Crowd Consensus headline: "${consensusHeadline}"`);
+      }
+      const playerBucketAttr = await page
+        .getByTestId('consensus-bucket-2')
+        .getAttribute('data-player');
+      if (playerBucketAttr !== 'true') {
+        throw new Error('Expected consensus bucket 2 to be highlighted as player bucket');
+      }
 
       // Click 1-Click Post Spoiler-Free Comment
       await page.getByTestId('post-share-comment-btn').click();
       await page.getByTestId('share-status-notice').waitFor({ state: 'visible' });
 
-      // Scroll modal back to top so score grid, pixel badges, and share card all appear cleanly in screenshot 3
+      // Scroll modal back to top so score grid, Crowd Consensus, and share card all appear cleanly in screenshot 3
       await page.evaluate(() => {
         const openDialog = document.querySelector('dialog[open]');
         if (openDialog) openDialog.scrollTop = 0;
@@ -209,8 +266,16 @@ async function main(): Promise<void> {
       await page.waitForTimeout(100);
 
       const shareMd = await page.getByTestId('share-markdown-preview').textContent();
-      if (!shareMd || !shareMd.includes('🟩🟨⬛🟩') || !shareMd.includes('🟩🟩🟩🟩') || !shareMd.includes('Karma')) {
-        throw new Error(`Unexpected spoiler-free share markdown: ${shareMd}`);
+      if (
+        !shareMd ||
+        !shareMd.includes('⚒️ IRON FORGE') ||
+        !shareMd.includes('2/3 moves') ||
+        !shareMd.includes('Sharper than') ||
+        !shareMd.includes('🟩🟨⬛🟩') ||
+        !shareMd.includes('🟩🟩🟩🟩') ||
+        !shareMd.includes('Karma')
+      ) {
+        throw new Error(`Unexpected spoiler-free Iron Forge share markdown: ${shareMd}`);
       }
 
       // Verify streak updated to 1d Lurker
@@ -219,18 +284,22 @@ async function main(): Promise<void> {
         throw new Error(`Expected streak pill with 1d Lurker; got "${streakText}"`);
       }
 
-      // Screenshot 3: Victory Modal & Spoiler-Free Share Card + Pixel Badges
+      // Screenshot 3: Victory Modal & Iron Forge + Crowd Consensus + Spoiler-Free Share Card
       await page.screenshot({
         path: path.join(materialsDir, '03_victory_share_card.png'),
         fullPage: false,
       });
+      await page.screenshot({
+        path: path.join(shotsDir, 'after_victory_share_card.png'),
+        fullPage: false,
+      });
 
-      // Verify Leaderboard shows our real solve + live spoiler-free thread comment
+      // Verify Leaderboard shows our real Iron Forge solve + live spoiler-free thread comment
       await page.getByRole('button', { name: 'Leaderboard' }).click();
       await page.getByTestId('leaderboard-table').waitFor({ state: 'visible' });
       const lbText = await page.getByTestId('leaderboard-table').textContent();
-      if (!lbText?.includes('u/Mindless-Past7833') || !lbText.includes('2/5')) {
-        throw new Error(`Leaderboard missing player entry: ${lbText}`);
+      if (!lbText?.includes('u/Mindless-Past7833') || !lbText.includes('2/3') || !lbText.includes('Iron')) {
+        throw new Error(`Leaderboard missing Iron Forge player entry: ${lbText}`);
       }
       await page.getByTestId('shared-comments-feed').waitFor({ state: 'visible' });
       await page.keyboard.press('Escape');
@@ -288,13 +357,13 @@ async function main(): Promise<void> {
       await page.getByTestId('toggle-sound-btn').click();
       await page.getByTestId('toggle-sound-btn').click();
 
-      // Return to Daily tab & verify Archive Browser shows 30-day Streak Heatmap + all 30 editions
+      // Return to Daily tab & verify Archive Browser shows 60-day Streak Heatmap + all 60 editions
       await page.getByTestId('tab-daily').click();
       await page.getByTestId('open-archive-btn').click();
       await page.getByTestId('archive-heatmap').waitFor({ state: 'visible' });
       const heatmapCount = await page.locator('[data-testid="archive-heatmap"] button').count();
-      if (heatmapCount !== 30) {
-        throw new Error(`Expected 30 heatmap cells, found ${heatmapCount}`);
+      if (heatmapCount !== 60) {
+        throw new Error(`Expected 60 heatmap cells, found ${heatmapCount}`);
       }
       const wonHeatmapCells = await page
         .locator('[data-testid="archive-heatmap"] button[data-status="won"]')
@@ -304,8 +373,8 @@ async function main(): Promise<void> {
       }
       await page.getByTestId('archive-edition-list').waitFor({ state: 'visible' });
       const archiveCount = await page.locator('[data-testid="archive-edition-list"] button').count();
-      if (archiveCount !== 30) {
-        throw new Error(`Expected 30 archive editions, found ${archiveCount}`);
+      if (archiveCount !== 60) {
+        throw new Error(`Expected 60 archive editions, found ${archiveCount}`);
       }
       await page.locator('[data-testid="archive-edition-list"] button').nth(1).click();
       await page.waitForTimeout(300);
@@ -354,6 +423,10 @@ async function main(): Promise<void> {
       // Screenshot 4: Mobile 375px dark terminal layout
       await mobilePage.screenshot({
         path: path.join(materialsDir, '04_mobile_375px.png'),
+        fullPage: false,
+      });
+      await mobilePage.screenshot({
+        path: path.join(shotsDir, 'after_mobile_375px.png'),
         fullPage: false,
       });
 

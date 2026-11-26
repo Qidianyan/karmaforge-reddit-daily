@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
 import {
   FLAIR_TIERS,
-  MAX_ATTEMPTS,
   computeSpeedCombo,
   formatCountdownHms,
   formatDurationCompact,
+  getMaxAttempts,
   padIssueNumber,
 } from '../../shared/index.js';
 import type {
@@ -16,6 +16,7 @@ import type {
   SharedCommentItem,
 } from '../../shared/index.js';
 import { BadgeVault } from './BadgeVault.js';
+import { AnvilIcon } from './BrandMark.js';
 import { BroadsheetDialog } from './BroadsheetDialog.js';
 
 interface ResultModalProps {
@@ -45,8 +46,11 @@ export function ResultModal({
   onOpenArchive,
   onOpenCommunityForge,
 }: ResultModalProps) {
-  const { progress, puzzle, streak, solutionReveal, shareMarkdown } = state;
+  const { progress, puzzle, streak, solutionReveal, shareMarkdown, crowdConsensus } = state;
   const won = progress.status === 'won';
+  const isHardMode = Boolean(progress.hardMode);
+  const isIronWin = won && isHardMode;
+  const maxAttempts = getMaxAttempts(isHardMode);
   const cardById = useMemo(() => new Map(puzzle.cards.map((c) => [c.id, c])), [puzzle.cards]);
 
   const title = won
@@ -66,16 +70,37 @@ export function ResultModal({
       elapsedSeconds: progress.elapsedSeconds ?? 45,
       hintsUsed: progress.hintsUsed,
       currentStreak: streak.currentStreak,
+      hardMode: isHardMode,
     });
-  }, [progress.attempts.length, progress.elapsedSeconds, progress.hintsUsed, streak.currentStreak, won]);
+  }, [
+    isHardMode,
+    progress.attempts.length,
+    progress.elapsedSeconds,
+    progress.hintsUsed,
+    streak.currentStreak,
+    won,
+  ]);
+
+  const maxBucketPct = useMemo(() => {
+    if (!crowdConsensus) return 100;
+    return Math.max(10, ...crowdConsensus.buckets.map((b) => b.pct));
+  }, [crowdConsensus]);
 
   return (
     <BroadsheetDialog open={open} title={title} onClose={onClose}>
       <div className={won ? 'kf-banner kf-banner--won' : 'kf-banner kf-banner--feedback'}>
-        <span>
-          {won
-            ? `Clean chain forged in ${progress.attempts.length}/${MAX_ATTEMPTS} moves. ${streak.flair.title} flair active.`
-            : 'Out of attempts. Inspect the verified chain below or try another edition.'}
+        <span className="kf-result-banner-copy">
+          {isIronWin && (
+            <span className="kf-iron-crest" data-testid="iron-forge-badge">
+              <AnvilIcon />
+              <span>IRON FORGE</span>
+            </span>
+          )}
+          <span>
+            {won
+              ? `Clean chain forged in ${progress.attempts.length}/${maxAttempts} moves. ${streak.flair.title} flair active.`
+              : 'Out of attempts. Inspect the verified chain below or try another edition.'}
+          </span>
         </span>
         <span className="tabular kf-mono">UTC {formatCountdownHms(countdownSeconds)}</span>
       </div>
@@ -83,9 +108,9 @@ export function ResultModal({
       <div className="kf-score-grid">
         <div className="kf-stat-box">
           <span className="kf-stat-val tabular">
-            {won ? `${progress.attempts.length}/${MAX_ATTEMPTS}` : `X/${MAX_ATTEMPTS}`}
+            {won ? `${progress.attempts.length}/${maxAttempts}` : `X/${maxAttempts}`}
           </span>
-          <span className="kf-stat-lbl">Moves</span>
+          <span className="kf-stat-lbl">{isHardMode ? 'Iron Moves' : 'Moves'}</span>
         </div>
         <div className="kf-stat-box">
           <span className="kf-stat-val tabular">{formatDurationCompact(progress.elapsedSeconds)}</span>
@@ -103,22 +128,89 @@ export function ResultModal({
         </div>
       </div>
 
-      <div>
-        <div className="kf-panel-head">
-          <h3 className="kf-panel-title">Pixel Badge Collection</h3>
-          <span className="kf-panel-sub tabular">
-            {streak.currentStreak}d active streak
-          </span>
-        </div>
-        <BadgeVault currentStreak={streak.currentStreak} bestStreak={streak.bestStreak} compact />
-        {streak.nextFlair && (
-          <p className="kf-muted-copy kf-next-flair-note">
-            Next Flair: <strong>{streak.nextFlair.title}</strong> ({streak.nextFlair.minDays}-day
-            streak, {Math.max(1, streak.nextFlair.minDays - streak.currentStreak)} day
-            {streak.nextFlair.minDays - streak.currentStreak === 1 ? '' : 's'} remaining).
+      {crowdConsensus && (
+        <section
+          className="kf-consensus-card"
+          data-testid="crowd-consensus-panel"
+          aria-label="Global Crowd Consensus attempt distribution"
+        >
+          <div className="kf-consensus-head">
+            <h3 className="kf-panel-title">Global Crowd Consensus</h3>
+            <span
+              className={
+                isIronWin
+                  ? 'kf-consensus-pill kf-consensus-pill--iron tabular'
+                  : 'kf-consensus-pill tabular'
+              }
+              data-testid="consensus-percentile-pill"
+            >
+              {crowdConsensus.headline}
+            </span>
+          </div>
+
+          <div className="kf-consensus-bars" role="list" aria-label="Attempts breakdown">
+            {crowdConsensus.buckets.map((bucket) => {
+              const barWidthPct = Math.max(
+                bucket.pct > 0 ? 6 : 0,
+                Math.round((bucket.pct / maxBucketPct) * 100),
+              );
+              const fillClass = [
+                'kf-consensus-fill',
+                bucket.isPlayerBucket
+                  ? isIronWin
+                    ? 'kf-consensus-fill--iron'
+                    : 'kf-consensus-fill--you'
+                  : bucket.key === 'X'
+                    ? 'kf-consensus-fill--lost'
+                    : '',
+              ]
+                .filter(Boolean)
+                .join(' ');
+
+              return (
+                <div
+                  key={bucket.key}
+                  role="listitem"
+                  data-testid={`consensus-bucket-${bucket.key}`}
+                  data-player={bucket.isPlayerBucket ? 'true' : undefined}
+                  className={
+                    bucket.isPlayerBucket
+                      ? 'kf-consensus-row kf-consensus-row--you'
+                      : 'kf-consensus-row'
+                  }
+                >
+                  <span className="kf-consensus-key kf-mono tabular">{bucket.key}</span>
+                  <div className="kf-consensus-track" aria-hidden="true">
+                    <div className={fillClass} style={{ width: `${barWidthPct}%` }} />
+                  </div>
+                  <span className="kf-consensus-pct tabular">
+                    {bucket.pct}%
+                    {bucket.isPlayerBucket && (
+                      <span
+                        className={
+                          isIronWin
+                            ? 'kf-consensus-you-tag kf-consensus-you-tag--iron'
+                            : 'kf-consensus-you-tag'
+                        }
+                      >
+                        YOU
+                      </span>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="kf-consensus-foot tabular">
+            {crowdConsensus.liveSampleSize} live run{crowdConsensus.liveSampleSize === 1 ? '' : 's'} +{' '}
+            {crowdConsensus.priorSampleSize} calibrated {puzzle.difficulty.toLowerCase()} baseline
+            {crowdConsensus.ironForgeSolves > 0
+              ? ` · ${crowdConsensus.ironForgeSolves} Iron Forge clear${crowdConsensus.ironForgeSolves === 1 ? '' : 's'}`
+              : ''}
           </p>
-        )}
-      </div>
+        </section>
+      )}
 
       {shareMarkdown && (
         <div className="kf-share-card">
@@ -163,6 +255,23 @@ export function ResultModal({
           )}
         </div>
       )}
+
+      <div>
+        <div className="kf-panel-head">
+          <h3 className="kf-panel-title">Pixel Badge Collection</h3>
+          <span className="kf-panel-sub tabular">
+            {streak.currentStreak}d active streak
+          </span>
+        </div>
+        <BadgeVault currentStreak={streak.currentStreak} bestStreak={streak.bestStreak} compact />
+        {streak.nextFlair && (
+          <p className="kf-muted-copy kf-next-flair-note">
+            Next Flair: <strong>{streak.nextFlair.title}</strong> ({streak.nextFlair.minDays}-day
+            streak, {Math.max(1, streak.nextFlair.minDays - streak.currentStreak)} day
+            {streak.nextFlair.minDays - streak.currentStreak === 1 ? '' : 's'} remaining).
+          </p>
+        )}
+      </div>
 
       {solutionReveal && (
         <div>
@@ -279,14 +388,22 @@ export function LeaderboardModal({
                   <tr key={`${entry.rank}-${entry.username}`} className={isSelf ? 'kf-lb-self' : undefined}>
                     <td className="tabular">#{entry.rank}</td>
                     <td>
-                      <div className="kf-lb-user">{entry.username}</div>
+                      <div className="kf-lb-user">
+                        {entry.username}
+                        {entry.hardMode && (
+                          <span className="kf-lb-iron-tag">
+                            <AnvilIcon />
+                            <span>Iron</span>
+                          </span>
+                        )}
+                      </div>
                       <div className="kf-lb-sub">
                         {entry.flairTitle}
                         {entry.streak > 0 ? ` · ${entry.streak}d streak` : ''}
                       </div>
                     </td>
                     <td className="tabular">
-                      {entry.moves}/{MAX_ATTEMPTS}
+                      {entry.moves}/{getMaxAttempts(entry.hardMode)}
                     </td>
                     <td className="tabular">{formatDurationCompact(entry.elapsedSeconds)}</td>
                     <td className="tabular kf-lb-karma">{entry.score}</td>
@@ -372,12 +489,16 @@ export function ArchiveModal({
   );
 
   return (
-    <BroadsheetDialog open={open} title="Archive Terminal · 30 Handcrafted Editions" onClose={onClose}>
-      <section className="kf-heatmap-box" aria-label="30-day daily solve streak heatmap">
+    <BroadsheetDialog
+      open={open}
+      title={`Archive Terminal · ${editions.length || 60} Handcrafted Editions`}
+      onClose={onClose}
+    >
+      <section className="kf-heatmap-box" aria-label="60-day daily solve streak heatmap">
         <div className="kf-heatmap-head">
-          <span className="kf-heatmap-title">30-Day Streak Heatmap</span>
+          <span className="kf-heatmap-title">60-Day Streak Heatmap</span>
           <span className="kf-heatmap-count tabular">
-            {solvedCount}/{editions.length || 30} Solved
+            {solvedCount}/{editions.length || 60} Solved
           </span>
         </div>
 
@@ -461,13 +582,15 @@ export function ArchiveModal({
         {filtered.map((ed) => {
           const isCurrent = ed.dateKey === activeDateKey;
           const isToday = ed.dateKey === todayUtc;
+          const edMax = getMaxAttempts(ed.hardMode);
+          const ironMark = ed.hardMode ? 'Iron · ' : '';
           const badgeLabel =
             ed.status === 'won'
-              ? `Solved ${ed.movesUsed}/${MAX_ATTEMPTS}`
+              ? `${ironMark}Solved ${ed.movesUsed}/${edMax}`
               : ed.status === 'lost'
                 ? 'Missed'
                 : ed.status === 'playing'
-                  ? `Active (${ed.movesUsed}/${MAX_ATTEMPTS})`
+                  ? `Active (${ed.movesUsed}/${edMax})`
                   : 'Play';
 
           return (
@@ -527,6 +650,13 @@ export function HelpModal({ open, onClose, currentStreak, bestStreak }: HelpModa
         <div className="kf-debrief-item kf-debrief-item--troll">
           <strong>Charcoal Strike: Off-Topic Red Herring</strong>
           <span>Plausible folklore myth or tangent. Remove it and slot a genuine causal link.</span>
+        </div>
+        <div className="kf-debrief-item kf-debrief-item--amber">
+          <strong>Iron Forge (Hard Mode): 3 Attempts &amp; Strict Clues</strong>
+          <span>
+            Toggle before Attempt 1: 3 tries max, revealed Misplaced links must stay in your chain,
+            and exposed Red Herrings are locked out for +25% Karma and a gold comment crest.
+          </span>
         </div>
       </div>
 

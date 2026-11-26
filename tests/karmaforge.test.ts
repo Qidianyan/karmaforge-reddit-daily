@@ -6,6 +6,8 @@ import {
   CARD_POOL_SIZE,
   COLLECTIBLE_BADGES,
   FLAIR_TIERS,
+  IRON_FORGE_MAX_ATTEMPTS,
+  MICRO_GUIDE_STORAGE_KEY,
   PUZZLES,
   QUICK_FORGE_PRESETS,
   SLOT_COUNT,
@@ -13,6 +15,7 @@ import {
   applyStreakWin,
   buildPlayerStreak,
   buildSeedCommunityNominees,
+  computeCrowdConsensus,
   computeLeaderboardSortKey,
   computeSolveScore,
   computeSpeedCombo,
@@ -20,13 +23,16 @@ import {
   getArchiveDateKeys,
   getEffectiveCurrentStreak,
   getFlairForStreak,
+  getMaxAttempts,
   getPuzzleForDate,
   getTomorrowUtcDateKey,
   gradeAttempt,
   normalizeSubredditName,
+  shouldShowMicroGuide,
   sortCommunitySubmissions,
   toPublicPuzzlePayload,
   validateCommunityPuzzleDraft,
+  validateIronForgeConstraints,
   verifyPuzzleIntegrity,
 } from '../src/shared/index.js';
 import { createKarmaForgeApp } from '../src/server/app.js';
@@ -68,18 +74,20 @@ function makeTestBridge(actor: RequestActor): RuntimeBridge {
   };
 }
 
-describe('KarmaForge · 30 Handcrafted Puzzles Integrity', () => {
-  it('contains exactly 30 unique, structurally valid puzzles across all 8 categories', () => {
-    expect(PUZZLES).toHaveLength(30);
+describe('KarmaForge · 60 Handcrafted Puzzles Integrity', () => {
+  it('contains exactly 60 unique, structurally valid puzzles across all 8 categories', () => {
+    expect(PUZZLES).toHaveLength(60);
 
     const ids = new Set<string>();
     const titles = new Set<string>();
     const categories = new Set<string>();
 
-    for (const puzzle of PUZZLES) {
+    for (let idx = 0; idx < PUZZLES.length; idx += 1) {
+      const puzzle = PUZZLES[idx]!;
       const errors = verifyPuzzleIntegrity(puzzle);
       expect(errors, `Puzzle ${puzzle.id} errors: ${errors.join('; ')}`).toEqual([]);
 
+      expect(puzzle.number).toBe(idx + 1);
       expect(ids.has(puzzle.id)).toBe(false);
       ids.add(puzzle.id);
 
@@ -105,10 +113,68 @@ describe('KarmaForge · 30 Handcrafted Puzzles Integrity', () => {
 
     expect(categories.size).toBe(8);
   });
+
+  it('verifies all 60 puzzles are 100% solvable with unique global card IDs, valid r/ subreddits, and clean text', () => {
+    const validCategories = new Set([
+      'Science',
+      'Retro Tech',
+      'Cooking',
+      'Cinema',
+      'Worldbuilding',
+      'Nature',
+      'History',
+      'Internet Culture',
+    ]);
+    const validDifficulties = new Set(['Mild', 'Spicy', 'Galaxy Brain']);
+    const globalCardIds = new Set<string>();
+    const globalCardTitles = new Set<string>();
+    const controlOrReplacement = /[\u0000-\u001f\ufffd]/;
+
+    for (const puzzle of PUZZLES) {
+      expect(validCategories.has(puzzle.category)).toBe(true);
+      expect(validDifficulties.has(puzzle.difficulty)).toBe(true);
+      expect(puzzle.subreddit.startsWith('r/')).toBe(true);
+      expect(puzzle.openingPost.subreddit.startsWith('r/')).toBe(true);
+      expect(puzzle.openingPost.author.startsWith('u/')).toBe(true);
+      expect(puzzle.finalePost.subreddit.startsWith('r/')).toBe(true);
+      expect(puzzle.finalePost.author.startsWith('u/')).toBe(true);
+
+      const solved = gradeAttempt(puzzle, [...puzzle.solutionIds]);
+      expect(solved.isSolved).toBe(true);
+      expect(solved.exactCount).toBe(SLOT_COUNT);
+      expect(solved.misplacedCount).toBe(0);
+      expect(solved.wrongCount).toBe(0);
+
+      for (const field of [
+        puzzle.title,
+        puzzle.openingPost.title,
+        puzzle.openingPost.excerpt,
+        puzzle.finalePost.title,
+        puzzle.finalePost.excerpt,
+      ]) {
+        expect(field.trim().length).toBeGreaterThan(10);
+        expect(controlOrReplacement.test(field)).toBe(false);
+      }
+
+      for (const card of puzzle.cards) {
+        expect(globalCardIds.has(card.id)).toBe(false);
+        globalCardIds.add(card.id);
+        expect(globalCardTitles.has(card.title.toLowerCase())).toBe(false);
+        globalCardTitles.add(card.title.toLowerCase());
+        expect(card.subreddit.startsWith('r/')).toBe(true);
+        for (const text of [card.tag, card.title, card.summary, card.debrief]) {
+          expect(text.trim().length).toBeGreaterThanOrEqual(3);
+          expect(controlOrReplacement.test(text)).toBe(false);
+        }
+      }
+    }
+
+    expect(globalCardIds.size).toBe(60 * CARD_POOL_SIZE);
+  });
 });
 
 describe('KarmaForge · Deterministic 365-Day UTC Calendar & Shuffling', () => {
-  it('maps every day of 2026 deterministically with zero repeats across any 30-day archive window', () => {
+  it('maps every day of 2026 deterministically with zero repeats across any 60-day archive window', () => {
     const start = '2026-01-01';
 
     for (let i = 0; i < 365; i += 1) {
@@ -127,11 +193,11 @@ describe('KarmaForge · Deterministic 365-Day UTC Calendar & Shuffling', () => {
       expect(startsSolved).toBe(false);
     }
 
-    for (const anchor of ['2026-01-30', '2026-06-15', '2026-11-24', '2026-12-31']) {
+    for (const anchor of ['2026-03-01', '2026-06-15', '2026-11-24', '2026-12-31']) {
       const archiveDates = getArchiveDateKeys(anchor);
-      expect(archiveDates).toHaveLength(30);
+      expect(archiveDates).toHaveLength(60);
       const uniqueIds = new Set(archiveDates.map((d) => getPuzzleForDate(d).puzzle.id));
-      expect(uniqueIds.size).toBe(30);
+      expect(uniqueIds.size).toBe(60);
     }
   });
 });
@@ -519,7 +585,7 @@ describe('KarmaForge · Full Server Service, Devvit Config & Dark Terminal Palet
     expect(shared.recentShares).toHaveLength(1);
 
     const archive = await buildArchiveList(store, actor, now);
-    expect(archive.editions).toHaveLength(30);
+    expect(archive.editions).toHaveLength(60);
     expect(archive.editions[0]?.status).toBe('won');
   });
 
@@ -587,7 +653,7 @@ describe('KarmaForge · Full Server Service, Devvit Config & Dark Terminal Palet
     }
   });
 
-  it('produces a 30-day Archive Streak Heatmap dataset with accurate multi-day statuses and move counts', async () => {
+  it('produces a 60-day Archive Streak Heatmap dataset with accurate multi-day statuses and move counts', async () => {
     const store = new FileBackedKvStore(null);
     const actor: RequestActor = {
       userId: 't2_heatmap',
@@ -624,7 +690,7 @@ describe('KarmaForge · Full Server Service, Devvit Config & Dark Terminal Palet
     );
 
     const archive = await buildArchiveList(store, actor, now);
-    expect(archive.editions).toHaveLength(30);
+    expect(archive.editions).toHaveLength(60);
     expect(archive.editions[0]?.dateKey).toBe('2026-11-24');
     expect(archive.editions[0]?.status).toBe('won');
     expect(archive.editions[0]?.movesUsed).toBe(1);
@@ -632,7 +698,7 @@ describe('KarmaForge · Full Server Service, Devvit Config & Dark Terminal Palet
     expect(archive.editions[1]?.status).toBe('playing');
     expect(archive.editions[1]?.movesUsed).toBe(1);
     expect(archive.editions[2]?.status).toBe('unplayed');
-    expect(archive.editions[29]?.dateKey).toBe('2026-10-26');
+    expect(archive.editions[59]?.dateKey).toBe(addUtcDays('2026-11-24', -59));
   });
 
   it('safely executes Web Audio mechanical key-click, toggle chime, and forge-lock hooks in headless environments', () => {
@@ -642,5 +708,353 @@ describe('KarmaForge · Full Server Service, Devvit Config & Dark Terminal Palet
     expect(() => playToggleChime(true)).not.toThrow();
     expect(() => playAttemptFeedback(true, ['exact', 'misplaced', 'wrong', 'exact'])).not.toThrow();
     expect(() => playVictoryChord(true)).not.toThrow();
+  });
+});
+
+describe('KarmaForge V4 · Iron Forge Hard Mode, Crowd Consensus & Micro-Guidance', () => {
+  const samplePuzzle = PUZZLES[31]!;
+  const [s0, s1, s2, s3] = samplePuzzle.solutionIds;
+  const redHerrings = samplePuzzle.cards.filter((c) => c.isRedHerring).map((c) => c.id);
+  const [t0, t1] = redHerrings as [string, string];
+
+  it('enforces Iron Forge 3-attempt cap and strict clue discipline across exact, misplaced, and red herring slots', () => {
+    expect(getMaxAttempts(false)).toBe(5);
+    expect(getMaxAttempts(true)).toBe(IRON_FORGE_MAX_ATTEMPTS);
+    expect(IRON_FORGE_MAX_ATTEMPTS).toBe(3);
+
+    const g1 = gradeAttempt(samplePuzzle, [s0, s2, t0, s3]);
+    const attempts = [
+      {
+        attemptNumber: 1,
+        slots: g1.slots,
+        exactCount: g1.exactCount,
+        misplacedCount: g1.misplacedCount,
+        wrongCount: g1.wrongCount,
+        submittedAt: '2026-11-25T10:00:00.000Z',
+      },
+    ];
+
+    // Moving confirmed Exact slot 0 fails
+    expect(validateIronForgeConstraints(attempts, [s1, s0, s2, s3])).toContain('Exact link');
+    // Replaying known Red Herring t0 fails
+    expect(validateIronForgeConstraints(attempts, [s0, t0, s2, s3])).toContain('Red Herrings');
+    // Dropping previously revealed Misplaced link s2 fails
+    expect(validateIronForgeConstraints(attempts, [s0, s1, t1, s3])).toContain('Misplaced');
+    // Keeping Misplaced link s2 in rejected Slot #2 fails
+    expect(validateIronForgeConstraints(attempts, [s0, s2, s1, s3])).toContain('rejected Slot #2');
+    // Valid next guess honoring all revealed clues passes
+    expect(validateIronForgeConstraints(attempts, [s0, s1, s2, s3])).toBeNull();
+  });
+
+  it('stamps ⚒️ IRON FORGE gold crest and Crowd Consensus percentile on spoiler-free Reddit comment markdown', () => {
+    const pub = toPublicPuzzlePayload(samplePuzzle, '2026-11-25', 329);
+    const g1 = gradeAttempt(samplePuzzle, [s0, s2, t0, s3]);
+    const g2 = gradeAttempt(samplePuzzle, [s0, s1, s2, s3]);
+    const streak = buildPlayerStreak({
+      currentStreak: 5,
+      bestStreak: 5,
+      totalSolved: 5,
+      lastSolvedDate: '2026-11-25',
+    });
+    const consensus = computeCrowdConsensus({
+      difficulty: samplePuzzle.difficulty,
+      liveDistribution: { moves1: 1, moves2: 2, moves3: 4, moves4: 3, moves5: 1, losses: 1 },
+      ironForgeSolves: 1,
+      playerStatus: 'won',
+      playerMoves: 2,
+      playerElapsedSeconds: 28,
+      playerHardMode: true,
+    });
+
+    const md = generateSpoilerFreeShareMarkdown({
+      puzzle: pub,
+      status: 'won',
+      attempts: [
+        {
+          attemptNumber: 1,
+          slots: g1.slots,
+          exactCount: g1.exactCount,
+          misplacedCount: g1.misplacedCount,
+          wrongCount: g1.wrongCount,
+          submittedAt: '2026-11-25T10:00:00.000Z',
+        },
+        {
+          attemptNumber: 2,
+          slots: g2.slots,
+          exactCount: g2.exactCount,
+          misplacedCount: g2.misplacedCount,
+          wrongCount: g2.wrongCount,
+          submittedAt: '2026-11-25T10:00:28.000Z',
+        },
+      ],
+      elapsedSeconds: 28,
+      hintsUsed: 0,
+      streak,
+      hardMode: true,
+      crowdConsensus: consensus,
+    });
+
+    expect(md).toContain('⚒️ IRON FORGE');
+    expect(md).toContain('2/3 moves');
+    expect(md).toContain(`Sharper than ${consensus.sharperThanPct}% of r/KarmaForge`);
+    expect(md).toContain('Iron Speed Runner');
+    for (const card of samplePuzzle.cards) {
+      expect(md).not.toContain(card.title);
+    }
+  });
+
+  it('awards 1.25x Iron Forge Karma bonus and persists hardMode through server loop, leaderboard, and archive', async () => {
+    const std = computeSpeedCombo({
+      moves: 2,
+      elapsedSeconds: 20,
+      hintsUsed: 0,
+      currentStreak: 2,
+      hardMode: false,
+    });
+    const iron = computeSpeedCombo({
+      moves: 2,
+      elapsedSeconds: 20,
+      hintsUsed: 0,
+      currentStreak: 2,
+      hardMode: true,
+    });
+    expect(iron.multiplier).toBeGreaterThan(std.multiplier);
+    expect(iron.finalKarma).toBeGreaterThan(std.finalKarma);
+    expect(iron.tierLabel).toBe('Iron Flash Forge');
+
+    const store = new FileBackedKvStore(null);
+    const actor: RequestActor = {
+      userId: 't2_iron_smith',
+      username: 'u/IronThreadSmith',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_iron',
+    };
+    const bridge = makeTestBridge(actor);
+    const now = new Date('2026-11-25T12:00:00.000Z');
+    const { puzzle } = getPuzzleForDate('2026-11-25');
+    const red = puzzle.cards.find((c) => c.isRedHerring)!;
+
+    const p1 = await handleGuessSubmission(
+      store,
+      bridge,
+      actor,
+      {
+        dateKey: '2026-11-25',
+        cardIds: [puzzle.solutionIds[0], puzzle.solutionIds[2], red.id, puzzle.solutionIds[3]],
+        elapsedSeconds: 16,
+        hardMode: true,
+      },
+      now,
+    );
+    expect(p1.progress.hardMode).toBe(true);
+    expect(p1.crowdConsensus).toBeNull();
+
+    // Server rejects Iron Forge clue violation (replaying red herring)
+    await expect(
+      handleGuessSubmission(
+        store,
+        bridge,
+        actor,
+        {
+          dateKey: '2026-11-25',
+          cardIds: [puzzle.solutionIds[0], red.id, puzzle.solutionIds[2], puzzle.solutionIds[3]],
+          elapsedSeconds: 20,
+          hardMode: false, // Even attempting to downgrade mid-game is ignored once locked!
+        },
+        now,
+      ),
+    ).rejects.toThrow(/Iron Forge rule/);
+
+    // Valid Attempt 2 solve finishes Iron Forge run and logs live Crowd Consensus telemetry
+    const won = await handleGuessSubmission(
+      store,
+      bridge,
+      actor,
+      {
+        dateKey: '2026-11-25',
+        cardIds: [...puzzle.solutionIds],
+        elapsedSeconds: 24,
+        hardMode: true,
+      },
+      now,
+    );
+    expect(won.progress.status).toBe('won');
+    expect(won.progress.hardMode).toBe(true);
+    expect(won.stats.ironForgeSolves).toBe(1);
+    expect(won.stats.moveDistribution?.moves2).toBe(1);
+    expect(won.crowdConsensus).not.toBeNull();
+    expect(won.crowdConsensus?.liveSampleSize).toBe(1);
+    expect(won.crowdConsensus?.sharperThanPct).toBeGreaterThanOrEqual(50);
+    expect(won.shareMarkdown).toContain('⚒️ IRON FORGE');
+    expect(won.leaderboard[0]?.hardMode).toBe(true);
+
+    const archive = await buildArchiveList(store, actor, now);
+    expect(archive.editions[0]?.hardMode).toBe(true);
+    expect(archive.editions[0]?.movesUsed).toBe(2);
+  });
+
+  it('locks Iron Forge runs as lost after 3 missed attempts and records live losses in move distribution', async () => {
+    const store = new FileBackedKvStore(null);
+    const actor: RequestActor = {
+      userId: 't2_iron_loss',
+      username: 'u/IronChallenger',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_ironloss',
+    };
+    const bridge = makeTestBridge(actor);
+    const now = new Date('2026-11-25T14:00:00.000Z');
+    const { puzzle } = getPuzzleForDate('2026-11-25');
+    const [a0, a1, a2, a3] = puzzle.solutionIds;
+
+    // 3 non-solving permutations (all valid Iron Forge guesses, never repeating rejected slots)
+    await handleGuessSubmission(
+      store,
+      bridge,
+      actor,
+      { dateKey: '2026-11-25', cardIds: [a1, a2, a3, a0], elapsedSeconds: 10, hardMode: true },
+      now,
+    );
+    await handleGuessSubmission(
+      store,
+      bridge,
+      actor,
+      { dateKey: '2026-11-25', cardIds: [a2, a3, a0, a1], elapsedSeconds: 20, hardMode: true },
+      now,
+    );
+    const lost = await handleGuessSubmission(
+      store,
+      bridge,
+      actor,
+      { dateKey: '2026-11-25', cardIds: [a3, a0, a1, a2], elapsedSeconds: 30, hardMode: true },
+      now,
+    );
+
+    expect(lost.progress.status).toBe('lost');
+    expect(lost.progress.attempts).toHaveLength(3);
+    expect(lost.stats.moveDistribution?.losses).toBe(1);
+    expect(lost.crowdConsensus?.sharperThanPct).toBe(0);
+    expect(lost.crowdConsensus?.buckets.find((b) => b.key === 'X')?.isPlayerBucket).toBe(true);
+    expect(lost.shareMarkdown).toContain('X/3 moves');
+    expect(lost.shareMarkdown).not.toContain('⚒️ IRON FORGE');
+  });
+
+  it('computes deterministic Global Crowd Consensus blending priors + live Redis counts monotonically', () => {
+    const baseInput = {
+      difficulty: 'Spicy' as const,
+      liveDistribution: { moves1: 2, moves2: 5, moves3: 8, moves4: 4, moves5: 1, losses: 1 },
+      ironForgeSolves: 2,
+      playerStatus: 'won' as const,
+      playerMoves: 2,
+      playerElapsedSeconds: 32,
+      playerHardMode: false,
+    };
+
+    const runA = computeCrowdConsensus(baseInput);
+    const runB = computeCrowdConsensus(baseInput);
+    expect(runA).toEqual(runB);
+    expect(runA.buckets).toHaveLength(6);
+    expect(runA.liveSampleSize).toBe(21);
+    expect(runA.priorSampleSize).toBe(40);
+    expect(runA.buckets.find((b) => b.key === '2')?.isPlayerBucket).toBe(true);
+    expect(runA.headline).toBe(`Sharper than ${runA.sharperThanPct}% of r/KarmaForge`);
+
+    // Adding 40 slower 4-move live solvers strictly raises a 2-move winner's percentile
+    const shifted = computeCrowdConsensus({
+      ...baseInput,
+      liveDistribution: { ...baseInput.liveDistribution, moves4: 44 },
+    });
+    expect(shifted.sharperThanPct).toBeGreaterThan(runA.sharperThanPct);
+  });
+
+  it('clamps Crowd Consensus percentile cleanly to [1, 99] on wins and 0 on losses under extreme live skew', () => {
+    const ultraFastWin = computeCrowdConsensus({
+      difficulty: 'Galaxy Brain',
+      liveDistribution: { moves1: 1, moves2: 0, moves3: 0, moves4: 0, moves5: 0, losses: 500 },
+      playerStatus: 'won',
+      playerMoves: 1,
+      playerElapsedSeconds: 5,
+      playerHardMode: true,
+    });
+    expect(ultraFastWin.sharperThanPct).toBeGreaterThanOrEqual(95);
+    expect(ultraFastWin.sharperThanPct).toBeLessThanOrEqual(99);
+
+    const slowLastMoveWin = computeCrowdConsensus({
+      difficulty: 'Mild',
+      liveDistribution: { moves1: 1000, moves2: 0, moves3: 0, moves4: 0, moves5: 1, losses: 0 },
+      playerStatus: 'won',
+      playerMoves: 5,
+      playerElapsedSeconds: 180,
+      playerHardMode: false,
+    });
+    expect(slowLastMoveWin.sharperThanPct).toBeGreaterThanOrEqual(1);
+    expect(slowLastMoveWin.sharperThanPct).toBeLessThanOrEqual(10);
+
+    const lossSummary = computeCrowdConsensus({
+      difficulty: 'Mild',
+      liveDistribution: { moves1: 10, moves2: 20, moves3: 10, moves4: 0, moves5: 0, losses: 5 },
+      playerStatus: 'lost',
+      playerMoves: 5,
+      playerElapsedSeconds: 90,
+      playerHardMode: false,
+    });
+    expect(lossSummary.sharperThanPct).toBe(0);
+    expect(lossSummary.headline).toContain('r/KarmaForge');
+  });
+
+  it('controls 3-second micro-guidance visibility and one-shot dismissal across first action and persistence', () => {
+    expect(MICRO_GUIDE_STORAGE_KEY).toBe('karmaforge:micro_guide_dismissed:v1');
+
+    // Fresh player on Daily tab with 0 attempts and 0 placed cards sees micro-guide
+    expect(
+      shouldShowMicroGuide({
+        dismissed: false,
+        isPlaying: true,
+        activeTab: 'daily',
+        attemptsCount: 0,
+        placedCount: 0,
+      }),
+    ).toBe(true);
+
+    // Placing 1st card immediately hides micro-guide
+    expect(
+      shouldShowMicroGuide({
+        dismissed: false,
+        isPlaying: true,
+        activeTab: 'daily',
+        attemptsCount: 0,
+        placedCount: 1,
+      }),
+    ).toBe(false);
+
+    // Persisted dismissed flag keeps micro-guide hidden even after clearing slots or reloading
+    expect(
+      shouldShowMicroGuide({
+        dismissed: true,
+        isPlaying: true,
+        activeTab: 'daily',
+        attemptsCount: 0,
+        placedCount: 0,
+      }),
+    ).toBe(false);
+
+    // Switching to Community Forge or viewing finished game hides micro-guide
+    expect(
+      shouldShowMicroGuide({
+        dismissed: false,
+        isPlaying: true,
+        activeTab: 'community',
+        attemptsCount: 0,
+        placedCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowMicroGuide({
+        dismissed: false,
+        isPlaying: false,
+        activeTab: 'daily',
+        attemptsCount: 0,
+        placedCount: 0,
+      }),
+    ).toBe(false);
   });
 });

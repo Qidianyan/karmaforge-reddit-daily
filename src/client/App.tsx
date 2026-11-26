@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import {
-  MAX_ATTEMPTS,
+  MICRO_GUIDE_STORAGE_KEY,
   SLOT_COUNT,
   computeSpeedCombo,
   extractKnownCardStatuses,
   formatDurationCompact,
+  getMaxAttempts,
   getSecondsUntilNextUtcDay,
   padIssueNumber,
+  shouldShowMicroGuide,
+  validateIronForgeConstraints,
 } from '../shared/index.js';
 import type {
   ArchiveEditionSummary,
@@ -49,6 +52,26 @@ import { playAttemptFeedback, playKeyClick, playToggleChime, playVictoryChord } 
 type SlotArray = [string | null, string | null, string | null, string | null];
 type ActiveTab = 'daily' | 'community';
 
+const IRON_FORGE_PREF_KEY = 'karmaforge:iron_forge_pref:v1';
+
+function readStoredFlag(key: string): boolean {
+  try {
+    return typeof window !== 'undefined' && window.localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredFlag(key: string, enabled: boolean): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(key, enabled ? '1' : '0');
+    }
+  } catch {
+    // Ignore storage failures in restricted iframes.
+  }
+}
+
 function findFirstOpenUnlockedSlot(slots: SlotArray, locked: (string | null)[]): number {
   for (let i = 0; i < SLOT_COUNT; i += 1) {
     if (!locked[i] && !slots[i]) {
@@ -80,6 +103,12 @@ export function App() {
   const [dirtySlots, setDirtySlots] = useState<boolean[]>([false, false, false, false]);
 
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [ironForgePref, setIronForgePref] = useState<boolean>(() =>
+    readStoredFlag(IRON_FORGE_PREF_KEY),
+  );
+  const [guideDismissed, setGuideDismissed] = useState<boolean>(() =>
+    readStoredFlag(MICRO_GUIDE_STORAGE_KEY),
+  );
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [countdownSeconds, setCountdownSeconds] = useState<number>(() =>
     getSecondsUntilNextUtcDay(),
@@ -136,16 +165,18 @@ export function App() {
     }
 
     if (isFreshSubmission && latest) {
+      const attemptCap = getMaxAttempts(next.progress.hardMode);
       setRevealPulse((prev) => prev + 1);
       if (next.progress.status === 'won') {
+        const ironPrefix = next.progress.hardMode ? 'IRON FORGE · ' : '';
         setFeedbackBanner(
-          `Thread Forged in ${attempts.length}/${MAX_ATTEMPTS} moves. ${next.streak.flair.title} flair active.`,
+          `${ironPrefix}Thread Forged in ${attempts.length}/${attemptCap} moves. ${next.streak.flair.title} flair active.`,
         );
       } else if (next.progress.status === 'lost') {
         setFeedbackBanner('Out of attempts. Open Debrief to inspect the verified chain.');
       } else {
         setFeedbackBanner(
-          `Attempt ${attempts.length}/${MAX_ATTEMPTS}: ${latest.exactCount} Exact, ${latest.misplacedCount} Wrong Order, ${latest.wrongCount} Red Herring${latest.wrongCount === 1 ? '' : 's'}.`,
+          `Attempt ${attempts.length}/${attemptCap}: ${latest.exactCount} Exact, ${latest.misplacedCount} Wrong Order, ${latest.wrongCount} Red Herring${latest.wrongCount === 1 ? '' : 's'}.`,
         );
       }
     } else {
@@ -219,6 +250,32 @@ export function App() {
   }, [state?.progress.attempts]);
 
   const isPlaying = state?.progress.status === 'playing';
+  const isHardModeLocked =
+    (state?.progress.attempts.length ?? 0) > 0 || state?.progress.status !== 'playing';
+  const effectiveHardMode = isHardModeLocked
+    ? Boolean(state?.progress.hardMode)
+    : ironForgePref;
+  const activeMaxAttempts = getMaxAttempts(effectiveHardMode);
+
+  const dismissMicroGuide = useCallback(() => {
+    setGuideDismissed((prev) => {
+      if (!prev) {
+        writeStoredFlag(MICRO_GUIDE_STORAGE_KEY, true);
+      }
+      return true;
+    });
+  }, []);
+
+  const handleToggleIronForge = useCallback(() => {
+    if (isHardModeLocked) return;
+    setIronForgePref((prev) => {
+      const next = !prev;
+      writeStoredFlag(IRON_FORGE_PREF_KEY, next);
+      playToggleChime(soundEnabled);
+      return next;
+    });
+    setErrorMsg(null);
+  }, [isHardModeLocked, soundEnabled]);
 
   const liveCombo = useMemo(() => {
     const moves = Math.max(1, (state?.progress.attempts.length ?? 0) + (isPlaying ? 1 : 0));
@@ -228,8 +285,10 @@ export function App() {
       elapsedSeconds: secs,
       hintsUsed: state?.progress.hintsUsed ?? 0,
       currentStreak: state?.streak.currentStreak ?? 0,
+      hardMode: effectiveHardMode,
     });
   }, [
+    effectiveHardMode,
     elapsedSeconds,
     isPlaying,
     state?.progress.attempts.length,
@@ -259,7 +318,12 @@ export function App() {
     (cardId: string, targetSlot: number) => {
       if (!isPlaying) return;
       if (known.lockedSlots[targetSlot]) return;
+      if (effectiveHardMode && known.knownWrongIds.has(cardId)) {
+        setErrorMsg('Iron Forge rule: Eliminated Red Herrings cannot be replayed.');
+        return;
+      }
 
+      dismissMicroGuide();
       playKeyClick(soundEnabled);
       setErrorMsg(null);
 
@@ -289,7 +353,16 @@ export function App() {
         return next;
       });
     },
-    [dirtySlots, isPlaying, known.lockedSlots, pushHistory, soundEnabled],
+    [
+      dirtySlots,
+      dismissMicroGuide,
+      effectiveHardMode,
+      isPlaying,
+      known.knownWrongIds,
+      known.lockedSlots,
+      pushHistory,
+      soundEnabled,
+    ],
   );
 
   const handleSwapAdjacentSlot = useCallback(
@@ -443,6 +516,14 @@ export function App() {
     }
 
     const cardIds = slots as [string, string, string, string];
+    if (effectiveHardMode && state.progress.attempts.length > 0) {
+      const ironError = validateIronForgeConstraints(state.progress.attempts, cardIds);
+      if (ironError) {
+        setErrorMsg(ironError);
+        return;
+      }
+    }
+
     setSubmitting(true);
     setErrorMsg(null);
     try {
@@ -450,6 +531,7 @@ export function App() {
         dateKey: state.activeDateKey,
         cardIds,
         elapsedSeconds: Math.max(1, elapsedSeconds),
+        hardMode: effectiveHardMode,
       });
       syncFromState(updated, true);
 
@@ -471,7 +553,16 @@ export function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [elapsedSeconds, isPlaying, slots, soundEnabled, state, submitting, syncFromState]);
+  }, [
+    effectiveHardMode,
+    elapsedSeconds,
+    isPlaying,
+    slots,
+    soundEnabled,
+    state,
+    submitting,
+    syncFromState,
+  ]);
 
   const handleRevealHint = useCallback(async () => {
     if (!state || !isPlaying) return;
@@ -735,6 +826,13 @@ export function App() {
   const filledCount = slots.filter(Boolean).length;
   const hasUnlockedFilled = slots.some((cardId, idx) => cardId !== null && !known.lockedSlots[idx]);
   const allFilled = filledCount === SLOT_COUNT;
+  const showMicroGuide = shouldShowMicroGuide({
+    dismissed: guideDismissed,
+    isPlaying: Boolean(isPlaying),
+    activeTab,
+    attemptsCount: progress.attempts.length,
+    placedCount: filledCount,
+  });
 
   return (
     <main className="kf-shell" data-testid="karmaforge-app">
@@ -862,7 +960,12 @@ export function App() {
       ) : (
         <>
           {/* Daily Terminal Telemetry Bar */}
-          <section className="kf-edition-bar" aria-label="Active daily puzzle">
+          <section
+            className={
+              effectiveHardMode ? 'kf-edition-bar kf-edition-bar--iron' : 'kf-edition-bar'
+            }
+            aria-label="Active daily puzzle"
+          >
             <div className="kf-edition-headline-wrap">
               <h2 className="kf-edition-title" data-testid="puzzle-title">
                 {puzzle.title}
@@ -871,6 +974,37 @@ export function App() {
               <span className="kf-meta-tag">{puzzle.difficulty}</span>
             </div>
             <div className="kf-edition-right tabular">
+              <label
+                className={[
+                  'kf-iron-switch',
+                  effectiveHardMode ? 'kf-iron-switch--on' : '',
+                  isHardModeLocked ? 'kf-iron-switch--locked' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                data-testid="iron-forge-toggle"
+                title={
+                  isHardModeLocked
+                    ? effectiveHardMode
+                      ? 'Iron Forge active (3 tries, strict clues, +25% Karma)'
+                      : 'Standard mode locked after Attempt 1'
+                    : 'Iron Forge Hard Mode: 3 tries max, strict clue rules, +25% Karma & gold comment crest'
+                }
+              >
+                <input
+                  type="checkbox"
+                  role="switch"
+                  {...({ switch: '' } as Record<string, string>)}
+                  className="kf-iron-input"
+                  data-testid="iron-forge-checkbox"
+                  checked={effectiveHardMode}
+                  disabled={isHardModeLocked}
+                  aria-label="Iron Forge hard mode (3 attempts, strict clues)"
+                  onChange={handleToggleIronForge}
+                />
+                <AnvilIcon />
+                <span className="kf-iron-label">Iron Forge</span>
+              </label>
               <span
                 className="kf-combo-pill"
                 data-testid="speed-combo-pill"
@@ -959,6 +1093,7 @@ export function App() {
                     'kf-slot',
                     card ? 'kf-slot--filled' : '',
                     isTarget ? 'kf-slot--active' : '',
+                    showMicroGuide && idx === 0 ? 'kf-slot--guided' : '',
                     isDragTarget ? 'kf-slot--dragover' : '',
                     isDragging ? 'kf-dragging' : '',
                     verdict ? `kf-slot--${verdict}` : '',
@@ -1085,22 +1220,29 @@ export function App() {
               {/* Primary Action & Attempts Strip */}
               <div className="kf-action-bar">
                 <div className="kf-attempts-meter">
-                  <span className="kf-attempts-label tabular">
+                  <span
+                    className={
+                      effectiveHardMode
+                        ? 'kf-attempts-label kf-attempts-label--iron tabular'
+                        : 'kf-attempts-label tabular'
+                    }
+                    data-testid="attempts-label"
+                  >
                     {progress.status === 'playing'
-                      ? `Attempts ${progress.attempts.length}/${MAX_ATTEMPTS}`
+                      ? `${effectiveHardMode ? 'Iron Forge' : 'Attempts'} ${progress.attempts.length}/${activeMaxAttempts}`
                       : progress.status === 'won'
-                        ? `Forged ${progress.attempts.length}/${MAX_ATTEMPTS}`
-                        : `Locked ${MAX_ATTEMPTS}/${MAX_ATTEMPTS}`}
+                        ? `Forged ${progress.attempts.length}/${activeMaxAttempts}`
+                        : `Locked ${activeMaxAttempts}/${activeMaxAttempts}`}
                   </span>
                   <span className="kf-pips" aria-hidden="true">
-                    {Array.from({ length: MAX_ATTEMPTS }).map((_, idx) => {
+                    {Array.from({ length: activeMaxAttempts }).map((_, idx) => {
                       const att = progress.attempts[idx];
-                      let cls = 'kf-pip';
+                      let cls = effectiveHardMode ? 'kf-pip kf-pip--iron' : 'kf-pip';
                       if (att) {
                         cls +=
                           att.exactCount === SLOT_COUNT
                             ? ' kf-pip--won'
-                            : progress.status === 'lost' && idx === MAX_ATTEMPTS - 1
+                            : progress.status === 'lost' && idx === activeMaxAttempts - 1
                               ? ' kf-pip--lost'
                               : ' kf-pip--used';
                       }
@@ -1161,8 +1303,25 @@ export function App() {
               <section className="kf-panel">
                 <div className="kf-panel-head">
                   <h2 className="kf-panel-title">Bridge Deck</h2>
-                  <span className="kf-panel-sub">4 Links, 2 Trolls</span>
+                  <span className="kf-panel-sub">
+                    {effectiveHardMode ? 'Iron · Strict Clues' : '4 Links, 2 Trolls'}
+                  </span>
                 </div>
+
+                {showMicroGuide && (
+                  <div className="kf-micro-guide" data-testid="micro-guide-cue" role="note">
+                    <span className="kf-micro-guide-dot" aria-hidden="true" />
+                    <span className="kf-micro-guide-text">Tap card or press 1-6 to link</span>
+                    <button
+                      type="button"
+                      className="kf-micro-guide-close"
+                      aria-label="Dismiss quick tip"
+                      onClick={dismissMicroGuide}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
 
                 <div className="kf-deck-list" data-testid="bridge-deck">
                   {puzzle.cards.map((card, cardIdx) => {
@@ -1170,11 +1329,14 @@ export function App() {
                     const isPlaced = placedIndex !== -1;
                     const isLockedCard = isPlaced && Boolean(known.lockedSlots[placedIndex]);
                     const isKnownWrong = known.knownWrongIds.has(card.id);
+                    const isIronBanned = effectiveHardMode && isKnownWrong && !isPlaced;
                     const badSlots = known.misplacedSlotsByCard[card.id] ?? [];
                     const isDragging = draggingCardId === card.id;
+                    const isGuidedCard = showMicroGuide && cardIdx === 0;
 
                     const cardClasses = [
                       'kf-bridge-card',
+                      isGuidedCard ? 'kf-bridge-card--guided' : '',
                       isPlaced ? 'kf-bridge-card--placed' : '',
                       isKnownWrong ? 'kf-bridge-card--known-wrong' : '',
                       !isKnownWrong && badSlots.length > 0 ? 'kf-bridge-card--known-misplaced' : '',
@@ -1189,9 +1351,10 @@ export function App() {
                         type="button"
                         data-testid={`bridge-card-${card.id}`}
                         data-card-id={card.id}
+                        data-guided={isGuidedCard ? 'true' : undefined}
                         className={cardClasses}
-                        disabled={!isPlaying || isLockedCard}
-                        draggable={Boolean(isPlaying && !isLockedCard)}
+                        disabled={!isPlaying || isLockedCard || isIronBanned}
+                        draggable={Boolean(isPlaying && !isLockedCard && !isIronBanned)}
                         onDragStart={onCardDragStart(card.id, isPlaced ? placedIndex : null)}
                         onDragEnd={onCardDragEnd}
                         onClick={() => handleTapBridgeCard(card.id)}
@@ -1204,12 +1367,18 @@ export function App() {
                             <span className="kf-bridge-sub">{card.subreddit}</span>
                             <span className="kf-bridge-tag">{card.tag}</span>
                           </div>
-                          {isPlaced ? (
+                          {isPlaced && isKnownWrong ? (
+                            <span className="kf-bridge-status kf-bridge-status--wrong tabular">
+                              Troll · #{placedIndex + 1}
+                            </span>
+                          ) : isPlaced ? (
                             <span className="kf-bridge-status kf-bridge-status--placed tabular">
                               {isLockedCard ? `Locked #${placedIndex + 1}` : `Slot #${placedIndex + 1}`}
                             </span>
                           ) : isKnownWrong ? (
-                            <span className="kf-bridge-status kf-bridge-status--wrong">Red Herring</span>
+                            <span className="kf-bridge-status kf-bridge-status--wrong">
+                              {effectiveHardMode ? 'Banned Troll' : 'Red Herring'}
+                            </span>
                           ) : badSlots.length > 0 ? (
                             <span className="kf-bridge-status kf-bridge-status--misplaced tabular">
                               Not {badSlots.map((s) => `#${s + 1}`).join(', ')}

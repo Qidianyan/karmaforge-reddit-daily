@@ -33,6 +33,7 @@ export async function postGuess(params: {
   dateKey: string;
   cardIds: string[];
   elapsedSeconds: number;
+  hardMode?: boolean;
 }): Promise<GameStateResponse> {
   const res = await fetch('/api/guess', {
     method: 'POST',
