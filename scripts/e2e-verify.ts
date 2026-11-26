@@ -391,6 +391,10 @@ async function main(): Promise<void> {
         path: path.join(shotsDir, 'after_v5_community_play.png'),
         fullPage: true,
       });
+      await page.screenshot({
+        path: path.join(materialsDir, '06_playable_ugc_thread.png'),
+        fullPage: true,
+      });
 
       // Clear unlocked and solve the UGC thread on Attempt 2!
       await page.getByTestId('clear-unlocked-btn').click();
@@ -439,6 +443,10 @@ async function main(): Promise<void> {
       // Capture V5 Screenshot: Upgraded 3-tab Ranks & Top Forgers Modal
       await page.screenshot({
         path: path.join(shotsDir, 'after_v5_ranks.png'),
+        fullPage: false,
+      });
+      await page.screenshot({
+        path: path.join(materialsDir, '07_ranks_and_forgers.png'),
         fullPage: false,
       });
       await page.keyboard.press('Escape');
@@ -556,13 +564,15 @@ async function main(): Promise<void> {
       throw new Error(`Failed HTTP requests detected:\n${failedRequests.join('\n')}`);
     }
 
-    console.log('✅ KarmaForge V2 Playwright E2E PASS — 0 console/page/network errors!');
-    console.log('   Saved 5 Dark Terminal Geek screenshots:');
+    console.log('✅ KarmaForge V6 Playwright E2E PASS — 0 console/page/network errors!');
+    console.log('   Saved 7 Dark Terminal Geek screenshots:');
     console.log(`   - ${path.join(materialsDir, '01_daily_board.png')}`);
     console.log(`   - ${path.join(materialsDir, '02_midgame_feedback.png')}`);
     console.log(`   - ${path.join(materialsDir, '03_victory_share_card.png')}`);
     console.log(`   - ${path.join(materialsDir, '04_mobile_375px.png')}`);
     console.log(`   - ${path.join(materialsDir, '05_community_forge.png')}`);
+    console.log(`   - ${path.join(materialsDir, '06_playable_ugc_thread.png')}`);
+    console.log(`   - ${path.join(materialsDir, '07_ranks_and_forgers.png')}`);
   } catch (err) {
     console.error('❌ E2E failed:', err);
     if (serverLogs.length > 0) {
