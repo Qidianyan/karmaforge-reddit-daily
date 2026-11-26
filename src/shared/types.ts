@@ -154,6 +154,27 @@ export interface LeaderboardEntry {
   completedAt: string;
 }
 
+export interface CreatorLeaderboardEntry {
+  rank: number;
+  username: string;
+  puzzlesCount: number;
+  totalVotes: number;
+  totalPlays: number;
+  totalClears: number;
+  clearRatePct: number;
+  creatorKarma: number;
+}
+
+export interface CommunityPlayMeta {
+  puzzleId: string;
+  authorUsername: string;
+  votes: number;
+  plays: number;
+  clears: number;
+  clearRatePct: number;
+  creatorKarmaAwarded: number;
+}
+
 export interface MoveDistribution {
   moves1: number;
   moves2: number;
@@ -214,6 +235,9 @@ export interface GameStateResponse {
   stats: DailyCommunityStats;
   crowdConsensus: CrowdConsensusSummary | null;
   leaderboard: LeaderboardEntry[];
+  ironForgeLeaderboard?: LeaderboardEntry[];
+  topForgers?: CreatorLeaderboardEntry[];
+  communityMeta?: CommunityPlayMeta | null;
   recentShares: SharedCommentItem[];
   solutionReveal: PuzzleSolutionReveal | null;
   shareMarkdown: string | null;
@@ -311,6 +335,11 @@ export interface CommunityPuzzleSubmission {
   hintText: string;
   votes: number;
   hasVoted: boolean;
+  plays?: number;
+  clears?: number;
+  clearRatePct?: number;
+  creatorKarma?: number;
+  hasSolved?: boolean;
   isCuratedSeed?: boolean;
 }
 

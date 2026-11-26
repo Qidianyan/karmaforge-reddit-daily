@@ -6,6 +6,7 @@ import {
   computeSpeedCombo,
   extractKnownCardStatuses,
   formatDurationCompact,
+  getIssueNumberForDate,
   getMaxAttempts,
   getSecondsUntilNextUtcDay,
   padIssueNumber,
@@ -16,15 +17,23 @@ import type {
   ArchiveEditionSummary,
   CommunityForgeDraftInput,
   CommunityForgeListResponse,
+  CreatorLeaderboardEntry,
+  DailyCommunityStats,
   GameStateResponse,
+  LeaderboardEntry,
+  SharedCommentItem,
   SlotVerdict,
 } from '../shared/index.js';
 import {
   fetchArchive,
+  fetchCommunityPlayState,
   fetchCommunityPuzzles,
   fetchGameState,
   fetchLeaderboard,
+  postCommunityGuess,
+  postCommunityHint,
   postCommunityPuzzle,
+  postCommunityShare,
   postCommunityVote,
   postGuess,
   postHint,
@@ -125,6 +134,14 @@ export function App() {
 
   const [communityQueue, setCommunityQueue] = useState<CommunityForgeListResponse | null>(null);
   const [communityLoading, setCommunityLoading] = useState(false);
+  const [ranksSnapshot, setRanksSnapshot] = useState<{
+    dateKey: string;
+    stats: DailyCommunityStats;
+    leaderboard: LeaderboardEntry[];
+    ironForgeLeaderboard: LeaderboardEntry[];
+    topForgers: CreatorLeaderboardEntry[];
+    recentShares: SharedCommentItem[];
+  } | null>(null);
 
   const dragCardRef = useRef<{ cardId: string; fromSlot: number | null } | null>(null);
   const timerStartRef = useRef<number>(Date.now());
@@ -198,6 +215,17 @@ export function App() {
       } finally {
         setLoading(false);
       }
+    },
+    [syncFromState],
+  );
+
+  const loadCommunityPuzzle = useCallback(
+    async (puzzleId: string) => {
+      setErrorMsg(null);
+      const data = await fetchCommunityPlayState(puzzleId);
+      syncFromState(data, false);
+      setResultModalOpen(false);
+      setActiveTab('daily');
     },
     [syncFromState],
   );
@@ -527,13 +555,24 @@ export function App() {
     setSubmitting(true);
     setErrorMsg(null);
     try {
-      const updated = await postGuess({
-        dateKey: state.activeDateKey,
-        cardIds,
-        elapsedSeconds: Math.max(1, elapsedSeconds),
-        hardMode: effectiveHardMode,
-      });
+      const updated = state.communityMeta
+        ? await postCommunityGuess({
+            puzzleId: state.communityMeta.puzzleId,
+            cardIds,
+            elapsedSeconds: Math.max(1, elapsedSeconds),
+            hardMode: effectiveHardMode,
+          })
+        : await postGuess({
+            dateKey: state.activeDateKey,
+            cardIds,
+            elapsedSeconds: Math.max(1, elapsedSeconds),
+            hardMode: effectiveHardMode,
+          });
       syncFromState(updated, true);
+
+      if (updated.communityMeta && updated.progress.status !== 'playing') {
+        void loadCommunityQueue();
+      }
 
       const newAttempt = updated.progress.attempts[updated.progress.attempts.length - 1];
       if (newAttempt) {
@@ -557,6 +596,7 @@ export function App() {
     effectiveHardMode,
     elapsedSeconds,
     isPlaying,
+    loadCommunityQueue,
     slots,
     soundEnabled,
     state,
@@ -569,7 +609,9 @@ export function App() {
     if (state.revealedHints.length >= state.puzzle.totalHints) return;
     setErrorMsg(null);
     try {
-      const updated = await postHint(state.activeDateKey);
+      const updated = state.communityMeta
+        ? await postCommunityHint(state.communityMeta.puzzleId)
+        : await postHint(state.activeDateKey);
       setState(updated);
       playKeyClick(soundEnabled);
     } catch (err) {
@@ -682,7 +724,9 @@ export function App() {
     setSharing(true);
     setShareNotice(null);
     try {
-      const res = await postShareComment(state.activeDateKey);
+      const res = state.communityMeta
+        ? await postCommunityShare(state.communityMeta.puzzleId)
+        : await postShareComment(state.activeDateKey);
       await copyTextSafe(res.markdown);
       setShareNotice(res.message);
       setState((prev) =>
@@ -725,13 +769,17 @@ export function App() {
     setLeaderboardModalOpen(true);
     if (!state) return;
     try {
-      const data = await fetchLeaderboard(state.activeDateKey);
+      const targetDate = state.communityMeta ? state.todayUtc : state.activeDateKey;
+      const data = await fetchLeaderboard(targetDate);
+      setRanksSnapshot(data);
       setState((prev) =>
         prev
           ? {
               ...prev,
-              stats: data.stats,
+              stats: prev.communityMeta ? prev.stats : data.stats,
               leaderboard: data.leaderboard,
+              ironForgeLeaderboard: data.ironForgeLeaderboard,
+              topForgers: data.topForgers,
               recentShares: data.recentShares,
             }
           : prev,
@@ -847,7 +895,7 @@ export function App() {
             <div className="kf-brand-row">
               <h1 className="kf-brand-name">KarmaForge</h1>
               <span className="kf-edition-stamp tabular">
-                #{padIssueNumber(puzzle.issueNumber)}
+                {state.communityMeta ? 'UGC' : `#${padIssueNumber(puzzle.issueNumber)}`}
               </span>
             </div>
             <span className="kf-brand-sub">{state.username}</span>
@@ -858,10 +906,20 @@ export function App() {
           <button
             type="button"
             role="tab"
-            aria-selected={activeTab === 'daily'}
+            aria-selected={activeTab === 'daily' && !state.communityMeta}
             data-testid="tab-daily"
-            className={activeTab === 'daily' ? 'kf-tab-btn kf-tab-btn--active' : 'kf-tab-btn'}
-            onClick={() => setActiveTab('daily')}
+            className={
+              activeTab === 'daily' && !state.communityMeta
+                ? 'kf-tab-btn kf-tab-btn--active'
+                : 'kf-tab-btn'
+            }
+            onClick={() => {
+              if (state.communityMeta) {
+                void loadDate(state.todayUtc);
+              } else {
+                setActiveTab('daily');
+              }
+            }}
           >
             <TerminalIcon />
             <span>Daily Forge</span>
@@ -869,9 +927,13 @@ export function App() {
           <button
             type="button"
             role="tab"
-            aria-selected={activeTab === 'community'}
+            aria-selected={activeTab === 'community' || Boolean(state.communityMeta)}
             data-testid="tab-community"
-            className={activeTab === 'community' ? 'kf-tab-btn kf-tab-btn--active' : 'kf-tab-btn'}
+            className={
+              activeTab === 'community' || Boolean(state.communityMeta)
+                ? 'kf-tab-btn kf-tab-btn--active'
+                : 'kf-tab-btn'
+            }
             onClick={() => {
               setActiveTab('community');
               void loadCommunityQueue();
@@ -959,20 +1021,26 @@ export function App() {
           onRefresh={loadCommunityQueue}
           onCreate={handleCreateCommunityPuzzle}
           onVote={handleVoteCommunityPuzzle}
+          onPlay={loadCommunityPuzzle}
         />
       ) : (
         <>
-          {/* Daily Terminal Telemetry Bar */}
+          {/* Daily / Community Terminal Telemetry Bar */}
           <section
             className={
               effectiveHardMode ? 'kf-edition-bar kf-edition-bar--iron' : 'kf-edition-bar'
             }
-            aria-label="Active daily puzzle"
+            aria-label={state.communityMeta ? 'Active community puzzle' : 'Active daily puzzle'}
           >
             <div className="kf-edition-headline-wrap">
               <h2 className="kf-edition-title" data-testid="puzzle-title">
                 {puzzle.title}
               </h2>
+              {state.communityMeta && (
+                <span className="kf-community-banner-chip" data-testid="community-play-badge">
+                  UGC · by {state.communityMeta.authorUsername}
+                </span>
+              )}
               <span className="kf-meta-tag">{puzzle.category}</span>
               <span className="kf-meta-tag">{puzzle.difficulty}</span>
             </div>
@@ -1021,15 +1089,33 @@ export function App() {
                 <ClockIcon />
                 <span>{formatDurationCompact(elapsedSeconds || 1)}</span>
               </span>
-              <span className="kf-date-chip kf-mono">{state.activeDateKey} UTC</span>
-              {!state.isToday && (
-                <button
-                  type="button"
-                  className="kf-back-today-btn"
-                  onClick={() => void loadDate(state.todayUtc)}
-                >
-                  Today
-                </button>
+              {state.communityMeta ? (
+                <>
+                  <span className="kf-date-chip kf-mono tabular">
+                    {state.communityMeta.clears}/{state.communityMeta.plays} clears
+                  </span>
+                  <button
+                    type="button"
+                    className="kf-back-today-btn"
+                    data-testid="back-to-daily-btn"
+                    onClick={() => void loadDate(state.todayUtc)}
+                  >
+                    Back to Daily
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="kf-date-chip kf-mono">{state.activeDateKey} UTC</span>
+                  {!state.isToday && (
+                    <button
+                      type="button"
+                      className="kf-back-today-btn"
+                      onClick={() => void loadDate(state.todayUtc)}
+                    >
+                      Today
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </section>
@@ -1123,6 +1209,17 @@ export function App() {
                       <span className="kf-slot-num tabular" aria-hidden="true">
                         {verdict === 'exact' ? '✓' : idx + 1}
                       </span>
+
+                      {verdict === 'exact' && revealPulse > 0 && (
+                        <span className="kf-forge-sparks" aria-hidden="true">
+                          <span className="kf-spark kf-spark--1" />
+                          <span className="kf-spark kf-spark--2" />
+                          <span className="kf-spark kf-spark--3" />
+                          <span className="kf-spark kf-spark--4" />
+                          <span className="kf-spark kf-spark--5" />
+                          <span className="kf-spark kf-spark--6" />
+                        </span>
+                      )}
 
                       <button
                         type="button"
@@ -1507,17 +1604,29 @@ export function App() {
           setActiveTab('community');
           void loadCommunityQueue();
         }}
+        onBackToDaily={() => {
+          setResultModalOpen(false);
+          void loadDate(state.todayUtc);
+        }}
       />
 
       <LeaderboardModal
         open={leaderboardModalOpen}
         onClose={() => setLeaderboardModalOpen(false)}
-        issueNumber={puzzle.issueNumber}
-        dateKey={state.activeDateKey}
+        issueNumber={
+          state.communityMeta
+            ? getIssueNumberForDate(ranksSnapshot?.dateKey ?? state.todayUtc)
+            : puzzle.issueNumber
+        }
+        dateKey={ranksSnapshot?.dateKey ?? (state.communityMeta ? state.todayUtc : state.activeDateKey)}
         subredditName={state.subredditName}
-        stats={state.stats}
-        leaderboard={state.leaderboard}
-        recentShares={state.recentShares}
+        stats={ranksSnapshot?.stats ?? state.stats}
+        leaderboard={ranksSnapshot?.leaderboard ?? state.leaderboard}
+        ironForgeLeaderboard={
+          ranksSnapshot?.ironForgeLeaderboard ?? state.ironForgeLeaderboard ?? []
+        }
+        topForgers={ranksSnapshot?.topForgers ?? state.topForgers ?? []}
+        recentShares={ranksSnapshot?.recentShares ?? state.recentShares}
         currentUsername={state.username}
       />
 

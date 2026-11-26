@@ -44,10 +44,23 @@ export function generateSpoilerFreeShareMarkdown(params: {
   streak: Pick<PlayerStreak, 'currentStreak' | 'flair'>;
   hardMode?: boolean;
   crowdConsensus?: CrowdConsensusSummary | null;
+  communityAuthor?: string | null;
 }): string {
-  const { puzzle, status, attempts, elapsedSeconds, hintsUsed, streak, hardMode, crowdConsensus } =
-    params;
-  const issueTag = `#${padIssueNumber(puzzle.issueNumber)}`;
+  const {
+    puzzle,
+    status,
+    attempts,
+    elapsedSeconds,
+    hintsUsed,
+    streak,
+    hardMode,
+    crowdConsensus,
+    communityAuthor,
+  } = params;
+  const isCommunity = Boolean(communityAuthor);
+  const editionBadge = isCommunity
+    ? `**KarmaForge Community** (by ${communityAuthor})`
+    : `**KarmaForge #${padIssueNumber(puzzle.issueNumber)}**`;
   const maxAttempts = getMaxAttempts(hardMode);
   const moveScore = status === 'won' ? `${attempts.length}/${maxAttempts}` : `X/${maxAttempts}`;
   const gridLines = attempts.map(formatAttemptRowEmoji);
@@ -80,13 +93,17 @@ export function generateSpoilerFreeShareMarkdown(params: {
     ? `> ⚡ **${combo.multiplier.toFixed(2)}x ${combo.tierLabel}** | **${combo.finalKarma} Karma**${percentileSuffix}`
     : '> 🔒 Thread locked for today, try tomorrow’s Community Forge winner!';
 
+  const footerLine = isCommunity
+    ? `Play ${communityAuthor}’s community thread in Community Forge (spoiler-free!).`
+    : 'Forge today’s 4-link subreddit thread in 60s (spoiler-free!).';
+
   return [
-    `${lastRow} **KarmaForge ${issueTag}**${ironTag} | ${moveScore} moves (${timeText}${hintSuffix}) | ${streakPart}`,
+    `${lastRow} ${editionBadge}${ironTag} | ${moveScore} moves (${timeText}${hintSuffix}) | ${streakPart}`,
     `*${puzzle.category}: "${puzzle.title}"*`,
     comboLine,
     '',
     ...gridLines,
     '',
-    'Forge today’s 4-link subreddit thread in 60s (spoiler-free!).',
+    footerLine,
   ].join('\n');
 }

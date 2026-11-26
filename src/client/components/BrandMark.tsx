@@ -160,3 +160,11 @@ export function DragHandleIcon() {
     </svg>
   );
 }
+
+export function PlayIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M4.2 2.8L13.2 8L4.2 13.2V2.8Z" fill="currentColor" />
+    </svg>
+  );
+}

@@ -9,6 +9,7 @@ import {
 } from '../../shared/index.js';
 import type {
   ArchiveEditionSummary,
+  CreatorLeaderboardEntry,
   DailyCommunityStats,
   GameStateResponse,
   LeaderboardEntry,
@@ -31,6 +32,7 @@ interface ResultModalProps {
   onOpenLeaderboard: () => void;
   onOpenArchive: () => void;
   onOpenCommunityForge: () => void;
+  onBackToDaily?: () => void;
 }
 
 export function ResultModal({
@@ -45,17 +47,24 @@ export function ResultModal({
   onOpenLeaderboard,
   onOpenArchive,
   onOpenCommunityForge,
+  onBackToDaily,
 }: ResultModalProps) {
-  const { progress, puzzle, streak, solutionReveal, shareMarkdown, crowdConsensus } = state;
+  const { progress, puzzle, streak, solutionReveal, shareMarkdown, crowdConsensus, communityMeta } =
+    state;
   const won = progress.status === 'won';
+  const isCommunity = Boolean(communityMeta);
   const isHardMode = Boolean(progress.hardMode);
   const isIronWin = won && isHardMode;
   const maxAttempts = getMaxAttempts(isHardMode);
   const cardById = useMemo(() => new Map(puzzle.cards.map((c) => [c.id, c])), [puzzle.cards]);
 
-  const title = won
-    ? `Thread Forged · Issue #${padIssueNumber(puzzle.issueNumber)}`
-    : `Thread Locked · Issue #${padIssueNumber(puzzle.issueNumber)}`;
+  const title = isCommunity
+    ? won
+      ? `Community Thread Forged · ${communityMeta!.authorUsername}`
+      : `Community Thread Locked · ${communityMeta!.authorUsername}`
+    : won
+      ? `Thread Forged · Issue #${padIssueNumber(puzzle.issueNumber)}`
+      : `Thread Locked · Issue #${padIssueNumber(puzzle.issueNumber)}`;
 
   const redHerringCards = useMemo(() => {
     if (!solutionReveal) return [];
@@ -97,7 +106,23 @@ export function ResultModal({
 
   return (
     <BroadsheetDialog open={open} title={title} onClose={onClose}>
-      <div className={won ? 'kf-banner kf-banner--won' : 'kf-banner kf-banner--feedback'}>
+      <div
+        className={
+          won
+            ? 'kf-banner kf-banner--won kf-banner--celebrate'
+            : 'kf-banner kf-banner--feedback'
+        }
+      >
+        {won && (
+          <span className="kf-victory-sparks" aria-hidden="true">
+            <span className="kf-vspark kf-vspark--1" />
+            <span className="kf-vspark kf-vspark--2" />
+            <span className="kf-vspark kf-vspark--3" />
+            <span className="kf-vspark kf-vspark--4" />
+            <span className="kf-vspark kf-vspark--5" />
+            <span className="kf-vspark kf-vspark--6" />
+          </span>
+        )}
         <span className="kf-result-banner-copy">
           {isIronWin && (
             <span className="kf-iron-crest" data-testid="iron-forge-badge">
@@ -105,9 +130,16 @@ export function ResultModal({
               <span>IRON FORGE</span>
             </span>
           )}
+          {isCommunity && won && communityMeta && (
+            <span className="kf-creator-karma-pill" data-testid="creator-karma-award">
+              +{communityMeta.creatorKarmaAwarded} Creator Karma to {communityMeta.authorUsername}
+            </span>
+          )}
           <span>
             {won
-              ? `Clean chain forged in ${progress.attempts.length}/${maxAttempts} moves. ${streak.flair.title} flair active.`
+              ? isCommunity && communityMeta
+                ? `Cleared in ${progress.attempts.length}/${maxAttempts} moves (${communityMeta.clears}/${communityMeta.plays} clears, ${communityMeta.clearRatePct}%).`
+                : `Clean chain forged in ${progress.attempts.length}/${maxAttempts} moves. ${streak.flair.title} flair active.`
               : 'Out of attempts. Inspect the verified chain below or try another edition.'}
           </span>
         </span>
@@ -257,9 +289,20 @@ export function ResultModal({
             <button type="button" className="kf-btn-secondary" onClick={onOpenLeaderboard}>
               Leaderboard
             </button>
-            <button type="button" className="kf-btn-secondary" onClick={onOpenCommunityForge}>
-              Vote Tomorrow
-            </button>
+            {isCommunity && onBackToDaily ? (
+              <button
+                type="button"
+                className="kf-btn-secondary"
+                data-testid="modal-back-to-daily-btn"
+                onClick={onBackToDaily}
+              >
+                Back to Daily
+              </button>
+            ) : (
+              <button type="button" className="kf-btn-secondary" onClick={onOpenCommunityForge}>
+                Play UGC
+              </button>
+            )}
             <button type="button" className="kf-btn-secondary" onClick={onOpenArchive}>
               Archive
             </button>
@@ -332,9 +375,13 @@ interface LeaderboardModalProps {
   subredditName: string;
   stats: DailyCommunityStats;
   leaderboard: LeaderboardEntry[];
+  ironForgeLeaderboard: LeaderboardEntry[];
+  topForgers: CreatorLeaderboardEntry[];
   recentShares: SharedCommentItem[];
   currentUsername: string;
 }
+
+type RanksBoardTab = 'daily' | 'iron' | 'forgers';
 
 export function LeaderboardModal({
   open,
@@ -344,13 +391,18 @@ export function LeaderboardModal({
   subredditName,
   stats,
   leaderboard,
+  ironForgeLeaderboard,
+  topForgers,
   recentShares,
   currentUsername,
 }: LeaderboardModalProps) {
+  const [boardTab, setBoardTab] = useState<RanksBoardTab>('daily');
+  const activeRunRows = boardTab === 'iron' ? ironForgeLeaderboard : leaderboard;
+
   return (
     <BroadsheetDialog
       open={open}
-      title={`Daily Leaderboard · Issue #${padIssueNumber(issueNumber)}`}
+      title={`Ranks & Forgers · Issue #${padIssueNumber(issueNumber)}`}
       onClose={onClose}
     >
       <div className="kf-muted-copy">
@@ -367,8 +419,8 @@ export function LeaderboardModal({
           <span className="kf-stat-lbl">Solve Rate</span>
         </div>
         <div className="kf-stat-box">
-          <span className="kf-stat-val tabular">{stats.avgMoves ?? '--'}</span>
-          <span className="kf-stat-lbl">Avg Moves</span>
+          <span className="kf-stat-val kf-stat-val--flame tabular">{ironForgeLeaderboard.length}</span>
+          <span className="kf-stat-lbl">Iron Clears</span>
         </div>
         <div className="kf-stat-box">
           <span className="kf-stat-val tabular">{formatDurationCompact(stats.avgSeconds)}</span>
@@ -376,60 +428,167 @@ export function LeaderboardModal({
         </div>
       </div>
 
-      <div>
-        <div className="kf-panel-head">
-          <h3 className="kf-panel-title">Fastest Thread Architects</h3>
-          <span className="kf-panel-sub">Ranked by moves, then speed</span>
-        </div>
-
-        {leaderboard.length === 0 ? (
-          <p className="kf-muted-copy">
-            No completed runs logged for this edition yet. Forge the 4-link thread to claim Rank #1.
-          </p>
-        ) : (
-          <table className="kf-lb-table" data-testid="leaderboard-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Redditor</th>
-                <th>Moves</th>
-                <th>Time</th>
-                <th>Karma</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leaderboard.map((entry) => {
-                const isSelf = entry.username === currentUsername;
-                return (
-                  <tr key={`${entry.rank}-${entry.username}`} className={isSelf ? 'kf-lb-self' : undefined}>
-                    <td className="tabular">#{entry.rank}</td>
-                    <td>
-                      <div className="kf-lb-user">
-                        {entry.username}
-                        {entry.hardMode && (
-                          <span className="kf-lb-iron-tag">
-                            <AnvilIcon />
-                            <span>Iron</span>
-                          </span>
-                        )}
-                      </div>
-                      <div className="kf-lb-sub">
-                        {entry.flairTitle}
-                        {entry.streak > 0 ? ` · ${entry.streak}d streak` : ''}
-                      </div>
-                    </td>
-                    <td className="tabular">
-                      {entry.moves}/{getMaxAttempts(entry.hardMode)}
-                    </td>
-                    <td className="tabular">{formatDurationCompact(entry.elapsedSeconds)}</td>
-                    <td className="tabular kf-lb-karma">{entry.score}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+      <div className="kf-ranks-tabs" role="tablist" aria-label="Leaderboard categories">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={boardTab === 'daily'}
+          data-testid="ranks-tab-daily"
+          className={boardTab === 'daily' ? 'kf-ranks-tab kf-ranks-tab--active' : 'kf-ranks-tab'}
+          onClick={() => setBoardTab('daily')}
+        >
+          <span>Daily Speedrun</span>
+          <span className="kf-ranks-count tabular">{leaderboard.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={boardTab === 'iron'}
+          data-testid="ranks-tab-iron"
+          className={boardTab === 'iron' ? 'kf-ranks-tab kf-ranks-tab--active' : 'kf-ranks-tab'}
+          onClick={() => setBoardTab('iron')}
+        >
+          <AnvilIcon />
+          <span>Iron Forge Hall</span>
+          <span className="kf-ranks-count tabular">{ironForgeLeaderboard.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={boardTab === 'forgers'}
+          data-testid="ranks-tab-forgers"
+          className={boardTab === 'forgers' ? 'kf-ranks-tab kf-ranks-tab--active' : 'kf-ranks-tab'}
+          onClick={() => setBoardTab('forgers')}
+        >
+          <span>Top Forgers</span>
+          <span className="kf-ranks-count tabular">{topForgers.length}</span>
+        </button>
       </div>
+
+      {boardTab === 'forgers' ? (
+        <div>
+          <div className="kf-panel-head">
+            <h3 className="kf-panel-title">Community Creator Reputation</h3>
+            <span className="kf-panel-sub">+10/vote · +50/clear</span>
+          </div>
+
+          {topForgers.length === 0 ? (
+            <p className="kf-muted-copy">
+              No community creators ranked yet. Publish a thread in Community Forge to earn Creator Karma.
+            </p>
+          ) : (
+            <table className="kf-lb-table" data-testid="top-forgers-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Creator</th>
+                  <th>Votes</th>
+                  <th>Clears</th>
+                  <th>Karma</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topForgers.map((creator) => {
+                  const isSelf = creator.username === currentUsername;
+                  return (
+                    <tr
+                      key={`${creator.rank}-${creator.username}`}
+                      className={isSelf ? 'kf-lb-self' : undefined}
+                      data-testid={isSelf ? 'top-forgers-self-row' : undefined}
+                    >
+                      <td className="tabular">#{creator.rank}</td>
+                      <td>
+                        <div className="kf-lb-user">
+                          {creator.username}
+                          {isSelf && <span className="kf-you-pill">YOU</span>}
+                        </div>
+                        <div className="kf-lb-sub tabular">
+                          {creator.puzzlesCount} thread{creator.puzzlesCount === 1 ? '' : 's'}
+                          {creator.totalPlays > 0 ? ` · ${creator.clearRatePct}% clear rate` : ''}
+                        </div>
+                      </td>
+                      <td className="tabular">{creator.totalVotes}</td>
+                      <td className="tabular">{creator.totalClears}</td>
+                      <td className="tabular kf-lb-karma">{creator.creatorKarma}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : (
+        <div>
+          <div className="kf-panel-head">
+            <h3 className="kf-panel-title">
+              {boardTab === 'iron' ? 'Iron Forge Hall of Fame' : 'Fastest Thread Architects'}
+            </h3>
+            <span className="kf-panel-sub">
+              {boardTab === 'iron'
+                ? '3 tries max · strict clues'
+                : 'Ranked: Iron Forge, moves, speed'}
+            </span>
+          </div>
+
+          {activeRunRows.length === 0 ? (
+            <p className="kf-muted-copy">
+              {boardTab === 'iron'
+                ? 'No Iron Forge clears logged for this edition yet. Flip Iron Forge ON before Attempt 1 to claim #1.'
+                : 'No completed runs logged for this edition yet. Forge the 4-link thread to claim Rank #1.'}
+            </p>
+          ) : (
+            <table
+              className="kf-lb-table"
+              data-testid={boardTab === 'iron' ? 'iron-leaderboard-table' : 'leaderboard-table'}
+            >
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Redditor</th>
+                  <th>Moves</th>
+                  <th>Time</th>
+                  <th>Karma</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeRunRows.map((entry) => {
+                  const isSelf = entry.username === currentUsername;
+                  return (
+                    <tr
+                      key={`${entry.rank}-${entry.username}`}
+                      className={isSelf ? 'kf-lb-self' : undefined}
+                      data-testid={isSelf ? 'leaderboard-self-row' : undefined}
+                    >
+                      <td className="tabular">#{entry.rank}</td>
+                      <td>
+                        <div className="kf-lb-user">
+                          {entry.username}
+                          {isSelf && <span className="kf-you-pill">YOU</span>}
+                          {entry.hardMode && (
+                            <span className="kf-lb-iron-tag">
+                              <AnvilIcon />
+                              <span>Iron</span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="kf-lb-sub">
+                          {entry.flairTitle}
+                          {entry.streak > 0 ? ` · ${entry.streak}d streak` : ''}
+                        </div>
+                      </td>
+                      <td className="tabular">
+                        {entry.moves}/{getMaxAttempts(entry.hardMode)}
+                      </td>
+                      <td className="tabular">{formatDurationCompact(entry.elapsedSeconds)}</td>
+                      <td className="tabular kf-lb-karma">{entry.score}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       <div>
         <div className="kf-panel-head">

@@ -123,22 +123,31 @@ export function playAttemptFeedback(enabled: boolean, verdicts: SlotVerdict[]): 
   const exactScale = [523.25, 659.25, 783.99, 1046.5];
 
   verdicts.forEach((verdict, idx) => {
-    const delaySec = idx * 0.095;
+    const delaySec = idx * 0.09;
     if (verdict === 'exact') {
-      // Crisp anvil lock ping + resonant harmonic
+      // Tactile mechanical switch snap transient
+      scheduleTone(ctx, {
+        freqStart: 1680,
+        freqEnd: 620,
+        type: 'triangle',
+        gainPeak: 0.04,
+        durationSec: 0.024,
+        delaySec,
+      });
+      // Crisp forged anvil lock ping + resonant fifth harmonic
       scheduleTone(ctx, {
         freqStart: exactScale[idx] ?? 783.99,
         type: 'triangle',
-        gainPeak: 0.07,
-        durationSec: 0.14,
-        delaySec,
+        gainPeak: 0.072,
+        durationSec: 0.145,
+        delaySec: delaySec + 0.008,
       });
       scheduleTone(ctx, {
         freqStart: (exactScale[idx] ?? 783.99) * 1.5,
         type: 'sine',
-        gainPeak: 0.032,
-        durationSec: 0.11,
-        delaySec: delaySec + 0.015,
+        gainPeak: 0.036,
+        durationSec: 0.12,
+        delaySec: delaySec + 0.022,
       });
     } else if (verdict === 'misplaced') {
       scheduleTone(ctx, {

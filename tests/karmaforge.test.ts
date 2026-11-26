@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CARD_POOL_SIZE,
   COLLECTIBLE_BADGES,
+  CREATOR_CLEAR_KARMA_BONUS,
+  CREATOR_VOTE_KARMA_WEIGHT,
   FLAIR_TIERS,
   IRON_FORGE_MAX_ATTEMPTS,
   MICRO_GUIDE_STORAGE_KEY,
@@ -15,6 +17,7 @@ import {
   applyStreakWin,
   buildPlayerStreak,
   buildSeedCommunityNominees,
+  communitySubmissionToPuzzleDefinition,
   computeCrowdConsensus,
   computeLeaderboardSortKey,
   computeSolveScore,
@@ -38,12 +41,19 @@ import {
 import { createKarmaForgeApp } from '../src/server/app.js';
 import {
   buildArchiveList,
+  buildCommunityPlayState,
   buildGameState,
   createCommunityPuzzle,
+  filterIronForgeLeaderboard,
+  handleCommunityGuess,
+  handleCommunityHint,
+  handleCommunityShare,
   handleGuessSubmission,
   handleHintUnlock,
   handleShareComment,
   listCommunityPuzzles,
+  readDailyLeaderboard,
+  readTopForgers,
   toggleCommunityVote,
 } from '../src/server/service.js';
 import { FileBackedKvStore } from '../src/server/storage.js';
@@ -1080,5 +1090,431 @@ describe('KarmaForge V4 · Iron Forge Hard Mode, Crowd Consensus & Micro-Guidanc
         placedCount: 0,
       }),
     ).toBe(false);
+  });
+});
+
+describe('KarmaForge V5 · Playable UGC Playground, Dual Ranks & Creator Reputation', () => {
+  it('converts every curated seed nominee into a 100% structurally valid playable PuzzleDefinition', () => {
+    const seeds = buildSeedCommunityNominees('2026-11-26');
+    expect(seeds.length).toBeGreaterThanOrEqual(3);
+
+    for (const seed of seeds) {
+      const puzzle = communitySubmissionToPuzzleDefinition(seed);
+      expect(verifyPuzzleIntegrity(puzzle), `Seed ${seed.id} integrity`).toEqual([]);
+      const solved = gradeAttempt(puzzle, [...puzzle.solutionIds]);
+      expect(solved.isSolved).toBe(true);
+      expect(solved.exactCount).toBe(SLOT_COUNT);
+    }
+  });
+
+  it('executes full UGC play loop: create -> play -> hint -> win -> updates plays/clears/Creator Karma without polluting Daily state', async () => {
+    const store = new FileBackedKvStore(null);
+    const author: RequestActor = {
+      userId: 't2_author',
+      username: 'u/ThreadCraftsman',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_v5',
+    };
+    const solver: RequestActor = {
+      userId: 't2_solver',
+      username: 'u/SpeedSolver',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_v5',
+    };
+    const now = new Date('2026-11-25T16:00:00.000Z');
+
+    const created = await createCommunityPuzzle(store, author, QUICK_FORGE_PRESETS[0]!, now);
+    const ugcId = created.submission.id;
+    const ugcPuzzle = communitySubmissionToPuzzleDefinition(created.submission);
+    const [l1, l2, l3, l4] = ugcPuzzle.solutionIds;
+    const trollId = ugcPuzzle.cards.find((c) => c.isRedHerring)!.id;
+
+    // Verify solver's Daily Forge starts untouched
+    const dailyBefore = await buildGameState(store, makeTestBridge(solver), solver, '2026-11-25', now);
+    expect(dailyBefore.progress.attempts).toHaveLength(0);
+    expect(dailyBefore.streak.totalSolved).toBe(0);
+
+    // Load UGC puzzle onto playable board
+    const playInit = await buildCommunityPlayState(store, makeTestBridge(solver), solver, ugcId, now);
+    expect(playInit.communityMeta?.authorUsername).toBe('u/ThreadCraftsman');
+    expect(playInit.solutionReveal).toBeNull();
+
+    // Unlock author's Top Comment Clue
+    const afterHint = await handleCommunityHint(store, makeTestBridge(solver), solver, ugcId, now);
+    expect(afterHint.revealedHints).toHaveLength(1);
+
+    // Submit partial attempt, then solve
+    await handleCommunityGuess(
+      store,
+      makeTestBridge(solver),
+      solver,
+      ugcId,
+      { cardIds: [l1, l3, trollId, l4], elapsedSeconds: 12 },
+      now,
+    );
+    const won = await handleCommunityGuess(
+      store,
+      makeTestBridge(solver),
+      solver,
+      ugcId,
+      { cardIds: [l1, l2, l3, l4], elapsedSeconds: 26 },
+      now,
+    );
+
+    expect(won.progress.status).toBe('won');
+    expect(won.communityMeta?.plays).toBe(1);
+    expect(won.communityMeta?.clears).toBe(1);
+    expect(won.communityMeta?.clearRatePct).toBe(100);
+    expect(won.communityMeta?.creatorKarmaAwarded).toBe(CREATOR_CLEAR_KARMA_BONUS);
+    expect(won.shareMarkdown).toContain('KarmaForge Community');
+    expect(won.shareMarkdown).toContain('u/ThreadCraftsman');
+
+    // Queue reflects real plays, clears, clearRatePct, hasSolved, and +50 Creator Karma!
+    const refreshedQueue = await listCommunityPuzzles(store, solver, now);
+    const targetEntry = refreshedQueue.items.find((i) => i.id === ugcId);
+    expect(targetEntry?.plays).toBe(1);
+    expect(targetEntry?.clears).toBe(1);
+    expect(targetEntry?.clearRatePct).toBe(100);
+    expect(targetEntry?.hasSolved).toBe(true);
+    expect(targetEntry?.creatorKarma).toBe(CREATOR_VOTE_KARMA_WEIGHT + CREATOR_CLEAR_KARMA_BONUS);
+
+    // Returning to Daily Forge leaves today's Daily puzzle & streak completely unpolluted!
+    const dailyAfter = await buildGameState(store, makeTestBridge(solver), solver, '2026-11-25', now);
+    expect(dailyAfter.progress.status).toBe('playing');
+    expect(dailyAfter.progress.attempts).toHaveLength(0);
+    expect(dailyAfter.streak.totalSolved).toBe(0);
+    expect(dailyAfter.leaderboard).toHaveLength(0);
+  });
+
+  it('prevents double-counting UGC plays/clears/Creator Karma on replays and records UGC losses accurately', async () => {
+    const store = new FileBackedKvStore(null);
+    const winner: RequestActor = {
+      userId: 't2_win_ugc',
+      username: 'u/WinnerUGC',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_v5',
+    };
+    const loser: RequestActor = {
+      userId: 't2_lose_ugc',
+      username: 'u/LoserUGC',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_v5',
+    };
+    const now = new Date('2026-11-25T16:30:00.000Z');
+    const seed = buildSeedCommunityNominees('2026-11-26')[0]!;
+    const puzzle = communitySubmissionToPuzzleDefinition(seed);
+    const [a0, a1, a2, a3] = puzzle.solutionIds;
+
+    // Winner solves once, then attempts to re-submit (idempotent!)
+    await handleCommunityGuess(
+      store,
+      makeTestBridge(winner),
+      winner,
+      seed.id,
+      { cardIds: [a0, a1, a2, a3], elapsedSeconds: 18 },
+      now,
+    );
+    const replay = await handleCommunityGuess(
+      store,
+      makeTestBridge(winner),
+      winner,
+      seed.id,
+      { cardIds: [a0, a1, a2, a3], elapsedSeconds: 10 },
+      now,
+    );
+    expect(replay.communityMeta?.plays).toBe(1);
+    expect(replay.communityMeta?.clears).toBe(1);
+
+    // Loser fails in Iron Forge (3 misses) -> plays=2, clears=1, clearRatePct=50%
+    await handleCommunityGuess(
+      store,
+      makeTestBridge(loser),
+      loser,
+      seed.id,
+      { cardIds: [a1, a2, a3, a0], elapsedSeconds: 10, hardMode: true },
+      now,
+    );
+    await handleCommunityGuess(
+      store,
+      makeTestBridge(loser),
+      loser,
+      seed.id,
+      { cardIds: [a2, a3, a0, a1], elapsedSeconds: 20, hardMode: true },
+      now,
+    );
+    const lost = await handleCommunityGuess(
+      store,
+      makeTestBridge(loser),
+      loser,
+      seed.id,
+      { cardIds: [a3, a0, a1, a2], elapsedSeconds: 30, hardMode: true },
+      now,
+    );
+    expect(lost.progress.status).toBe('lost');
+    expect(lost.communityMeta?.plays).toBe(2);
+    expect(lost.communityMeta?.clears).toBe(1);
+    expect(lost.communityMeta?.clearRatePct).toBe(50);
+    expect(lost.communityMeta?.creatorKarmaAwarded).toBe(0);
+  });
+
+  it('generates spoiler-free UGC share markdown crediting u/<author> with zero card title leaks', () => {
+    const seed = buildSeedCommunityNominees('2026-11-26')[2]!;
+    const puzzle = communitySubmissionToPuzzleDefinition(seed);
+    const pub = toPublicPuzzlePayload(puzzle, `community-${seed.id}`, 0);
+    const g1 = gradeAttempt(puzzle, [...puzzle.solutionIds]);
+    const streak = buildPlayerStreak({
+      currentStreak: 3,
+      bestStreak: 3,
+      totalSolved: 3,
+      lastSolvedDate: '2026-11-25',
+    });
+
+    const md = generateSpoilerFreeShareMarkdown({
+      puzzle: pub,
+      status: 'won',
+      attempts: [
+        {
+          attemptNumber: 1,
+          slots: g1.slots,
+          exactCount: g1.exactCount,
+          misplacedCount: g1.misplacedCount,
+          wrongCount: g1.wrongCount,
+          submittedAt: '2026-11-25T17:00:00.000Z',
+        },
+      ],
+      elapsedSeconds: 19,
+      hintsUsed: 0,
+      streak,
+      hardMode: true,
+      communityAuthor: seed.authorUsername,
+    });
+
+    expect(md).toContain('KarmaForge Community');
+    expect(md).toContain(seed.authorUsername);
+    expect(md).toContain('⚒️ IRON FORGE');
+    expect(md).toContain('1/3 moves');
+    for (const card of puzzle.cards) {
+      expect(md).not.toContain(card.title);
+      expect(md).not.toContain(card.id);
+    }
+  });
+
+  it('serves playable UGC HTTP routes (/play/:id, /guess, /hint, /share) and returns 404 on unknown puzzle', async () => {
+    const store = new FileBackedKvStore(null);
+    const actor: RequestActor = {
+      userId: 't2_ugc_http',
+      username: 'u/UgcHttpPlayer',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_ugc_http',
+    };
+    const app = createKarmaForgeApp({ store, bridge: makeTestBridge(actor) });
+    const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+      s.once('error', reject);
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') {
+      server.close();
+      throw new Error('Failed to bind ephemeral port');
+    }
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+    try {
+      const missingRes = await fetch(`${baseUrl}/api/community/play/nonexistent-id`);
+      expect(missingRes.status).toBe(404);
+
+      const seed = buildSeedCommunityNominees(getTomorrowUtcDateKey('2026-11-25'))[1]!;
+      const puzzle = communitySubmissionToPuzzleDefinition(seed);
+
+      const playRes = await fetch(`${baseUrl}/api/community/play/${seed.id}`);
+      expect(playRes.status).toBe(200);
+
+      const hintRes = await fetch(`${baseUrl}/api/community/play/${seed.id}/hint`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(hintRes.status).toBe(200);
+
+      const guessRes = await fetch(`${baseUrl}/api/community/play/${seed.id}/guess`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardIds: [...puzzle.solutionIds], elapsedSeconds: 21 }),
+      });
+      expect(guessRes.status).toBe(200);
+      const guessJson = (await guessRes.json()) as {
+        progress: { status: string };
+        communityMeta: { clears: number; creatorKarmaAwarded: number };
+      };
+      expect(guessJson.progress.status).toBe('won');
+      expect(guessJson.communityMeta.clears).toBe(1);
+      expect(guessJson.communityMeta.creatorKarmaAwarded).toBe(50);
+
+      const shareRes = await fetch(`${baseUrl}/api/community/play/${seed.id}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      expect(shareRes.status).toBe(200);
+      const shareJson = (await shareRes.json()) as { ok: boolean; markdown: string };
+      expect(shareJson.ok).toBe(true);
+      expect(shareJson.markdown).toContain(seed.authorUsername);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('ranks Daily Speedrun by Iron Forge > fewer moves > faster time, deduplicates same user, and filters Iron Forge Hall', async () => {
+    // Verify sort key ordering: Iron Forge 2-move beats Standard 1-move!
+    const ironTwoMoves = computeLeaderboardSortKey({
+      moves: 2,
+      elapsedSeconds: 40,
+      hintsUsed: 0,
+      hardMode: true,
+    });
+    const stdOneMove = computeLeaderboardSortKey({
+      moves: 1,
+      elapsedSeconds: 10,
+      hintsUsed: 0,
+      hardMode: false,
+    });
+    expect(ironTwoMoves).toBeLessThan(stdOneMove);
+
+    const store = new FileBackedKvStore(null);
+    const now = new Date('2026-11-25T18:00:00.000Z');
+    const { puzzle } = getPuzzleForDate('2026-11-25');
+    const [s0, s1, s2, s3] = puzzle.solutionIds;
+    const red = puzzle.cards.find((c) => c.isRedHerring)!;
+
+    const stdFast: RequestActor = {
+      userId: 't2_std_fast',
+      username: 'u/StandardFlash',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_lb',
+    };
+    const ironSlower: RequestActor = {
+      userId: 't2_iron_slower',
+      username: 'u/IronMaster',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_lb',
+    };
+    const ironFaster: RequestActor = {
+      userId: 't2_iron_faster',
+      username: 'u/IronAce',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_lb',
+    };
+
+    // Standard 1-move in 12s
+    await handleGuessSubmission(
+      store,
+      makeTestBridge(stdFast),
+      stdFast,
+      { dateKey: '2026-11-25', cardIds: [s0, s1, s2, s3], elapsedSeconds: 12, hardMode: false },
+      now,
+    );
+    // Duplicate submission by same user stays deduplicated
+    await handleGuessSubmission(
+      store,
+      makeTestBridge(stdFast),
+      stdFast,
+      { dateKey: '2026-11-25', cardIds: [s0, s1, s2, s3], elapsedSeconds: 5, hardMode: false },
+      now,
+    );
+
+    // Iron Forge 2-move in 30s
+    await handleGuessSubmission(
+      store,
+      makeTestBridge(ironSlower),
+      ironSlower,
+      { dateKey: '2026-11-25', cardIds: [s0, s2, red.id, s3], elapsedSeconds: 15, hardMode: true },
+      now,
+    );
+    await handleGuessSubmission(
+      store,
+      makeTestBridge(ironSlower),
+      ironSlower,
+      { dateKey: '2026-11-25', cardIds: [s0, s1, s2, s3], elapsedSeconds: 30, hardMode: true },
+      now,
+    );
+
+    // Iron Forge 1-move in 25s
+    await handleGuessSubmission(
+      store,
+      makeTestBridge(ironFaster),
+      ironFaster,
+      { dateKey: '2026-11-25', cardIds: [s0, s1, s2, s3], elapsedSeconds: 25, hardMode: true },
+      now,
+    );
+
+    const dailyLb = await readDailyLeaderboard(store, '2026-11-25', 15);
+    expect(dailyLb).toHaveLength(3);
+    expect(dailyLb.map((e) => e.username)).toEqual([
+      'u/IronAce',
+      'u/IronMaster',
+      'u/StandardFlash',
+    ]);
+
+    const ironHall = filterIronForgeLeaderboard(dailyLb, 15);
+    expect(ironHall).toHaveLength(2);
+    expect(ironHall.map((e) => `${e.rank}:${e.username}`)).toEqual([
+      '1:u/IronAce',
+      '2:u/IronMaster',
+    ]);
+  });
+
+  it('aggregates Top Forgers Creator Karma leaderboard from real upvotes (+10) and UGC clears (+50)', async () => {
+    const store = new FileBackedKvStore(null);
+    const now = new Date('2026-11-25T19:00:00.000Z');
+    const creator: RequestActor = {
+      userId: 't2_top_creator',
+      username: 'u/ForgeLegend',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_forgers',
+    };
+    const playerA: RequestActor = {
+      userId: 't2_p_a',
+      username: 'u/PlayerAlpha',
+      subredditName: 'r/KarmaForgeDaily',
+      postId: 't3_forgers',
+    };
+
+    const created = await createCommunityPuzzle(store, creator, QUICK_FORGE_PRESETS[1]!, now);
+    const puzzle = communitySubmissionToPuzzleDefinition(created.submission);
+
+    // PlayerA upvotes (+10) and clears (+50) creator's thread!
+    await toggleCommunityVote(store, playerA, { puzzleId: created.submission.id }, now);
+    await handleCommunityGuess(
+      store,
+      makeTestBridge(playerA),
+      playerA,
+      created.submission.id,
+      { cardIds: [...puzzle.solutionIds], elapsedSeconds: 22 },
+      now,
+    );
+
+    // Also test handleCommunityShare persists into shared comments feed
+    const shared = await handleCommunityShare(
+      store,
+      makeTestBridge(playerA),
+      playerA,
+      created.submission.id,
+      now,
+    );
+    expect(shared.ok).toBe(true);
+    expect(shared.markdown).toContain('u/ForgeLegend');
+
+    const forgers = await readTopForgers(store, creator, now);
+    const legendRow = forgers.find((f) => f.username === 'u/ForgeLegend');
+    expect(legendRow).toBeDefined();
+    expect(legendRow?.totalVotes).toBe(2);
+    expect(legendRow?.totalClears).toBe(1);
+    expect(legendRow?.creatorKarma).toBe(
+      2 * CREATOR_VOTE_KARMA_WEIGHT + 1 * CREATOR_CLEAR_KARMA_BONUS,
+    );
+    // Ranking is sorted strictly by creatorKarma descending
+    for (let i = 1; i < forgers.length; i += 1) {
+      expect(forgers[i - 1]!.creatorKarma).toBeGreaterThanOrEqual(forgers[i]!.creatorKarma);
+    }
   });
 });

@@ -4,6 +4,7 @@ import type {
   CommunityForgeDraftInput,
   CommunityForgeListResponse,
   CommunityVoteResponse,
+  CreatorLeaderboardEntry,
   DailyCommunityStats,
   GameStateResponse,
   LeaderboardEntry,
@@ -70,6 +71,8 @@ export async function fetchLeaderboard(dateKey: string): Promise<{
   dateKey: string;
   stats: DailyCommunityStats;
   leaderboard: LeaderboardEntry[];
+  ironForgeLeaderboard: LeaderboardEntry[];
+  topForgers: CreatorLeaderboardEntry[];
   recentShares: SharedCommentItem[];
 }> {
   const res = await fetch(`/api/leaderboard?date=${encodeURIComponent(dateKey)}`, {
@@ -81,6 +84,49 @@ export async function fetchLeaderboard(dateKey: string): Promise<{
 export async function fetchCommunityPuzzles(): Promise<CommunityForgeListResponse> {
   const res = await fetch('/api/community/puzzles', { cache: 'no-store' });
   return parseJsonOrThrow<CommunityForgeListResponse>(res);
+}
+
+export async function fetchCommunityPlayState(puzzleId: string): Promise<GameStateResponse> {
+  const res = await fetch(`/api/community/play/${encodeURIComponent(puzzleId)}`, {
+    cache: 'no-store',
+  });
+  return parseJsonOrThrow<GameStateResponse>(res);
+}
+
+export async function postCommunityGuess(params: {
+  puzzleId: string;
+  cardIds: string[];
+  elapsedSeconds: number;
+  hardMode?: boolean;
+}): Promise<GameStateResponse> {
+  const res = await fetch(`/api/community/play/${encodeURIComponent(params.puzzleId)}/guess`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      cardIds: params.cardIds,
+      elapsedSeconds: params.elapsedSeconds,
+      hardMode: params.hardMode,
+    }),
+  });
+  return parseJsonOrThrow<GameStateResponse>(res);
+}
+
+export async function postCommunityHint(puzzleId: string): Promise<GameStateResponse> {
+  const res = await fetch(`/api/community/play/${encodeURIComponent(puzzleId)}/hint`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return parseJsonOrThrow<GameStateResponse>(res);
+}
+
+export async function postCommunityShare(puzzleId: string): Promise<ShareCommentResponse> {
+  const res = await fetch(`/api/community/play/${encodeURIComponent(puzzleId)}/share`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return parseJsonOrThrow<ShareCommentResponse>(res);
 }
 
 export async function postCommunityPuzzle(

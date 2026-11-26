@@ -365,6 +365,84 @@ async function main(): Promise<void> {
         fullPage: true,
       });
 
+      // ========================================================
+      // 2B. V5 PLAYABLE UGC PLAYGROUND -> PLAY THREAD -> SOLVE -> RANKS
+      // ========================================================
+      const seedId = 'cf-seed-mechanical-keyboards';
+      await page.getByTestId(`community-play-${seedId}`).click();
+      await page.getByTestId('community-play-badge').waitFor({ state: 'visible' });
+      await page.getByTestId('back-to-daily-btn').waitFor({ state: 'visible' });
+
+      // Reveal creator's Top Comment Clue with 'h'
+      await page.keyboard.press('h');
+      await page.getByTestId('hint-card-0').waitFor({ state: 'visible' });
+
+      // Attempt 1 on UGC thread: [l1, l3, t1, l4] -> Exact Lock + Spark feedback!
+      await page.getByTestId(`bridge-card-${seedId}-l1`).click();
+      await page.getByTestId(`bridge-card-${seedId}-l3`).click();
+      await page.getByTestId(`bridge-card-${seedId}-t1`).click();
+      await page.getByTestId(`bridge-card-${seedId}-l4`).click();
+      await page.getByTestId('forge-submit-btn').click();
+      await page.getByTestId('feedback-banner').waitFor({ state: 'visible' });
+      await page.waitForTimeout(300);
+
+      // Capture V5 Screenshot: Playable UGC Thread Live Board
+      await page.screenshot({
+        path: path.join(shotsDir, 'after_v5_community_play.png'),
+        fullPage: true,
+      });
+
+      // Clear unlocked and solve the UGC thread on Attempt 2!
+      await page.getByTestId('clear-unlocked-btn').click();
+      await page.getByTestId(`bridge-card-${seedId}-l2`).click();
+      await page.getByTestId(`bridge-card-${seedId}-l3`).click();
+      await page.getByTestId('forge-submit-btn').click();
+      await page.getByTestId('creator-karma-award').waitFor({ state: 'visible', timeout: 5000 });
+
+      const ugcShareMd = await page.getByTestId('share-markdown-preview').textContent();
+      if (!ugcShareMd?.includes('KarmaForge Community') || !ugcShareMd.includes('u/ThockArchitect')) {
+        throw new Error(`Expected UGC share markdown with creator credit, got: ${ugcShareMd}`);
+      }
+
+      // Click Back to Daily inside modal -> verify today's Daily Forge state is completely intact!
+      await page.getByTestId('modal-back-to-daily-btn').click();
+      await page.waitForTimeout(250);
+      const dailyAttemptsAfterUgc = await page.getByTestId('attempts-label').textContent();
+      if (!dailyAttemptsAfterUgc?.includes('Forged 2/3')) {
+        throw new Error(
+          `Expected today's Daily Forge (Forged 2/3) intact after UGC return, got "${dailyAttemptsAfterUgc}"`,
+        );
+      }
+
+      // Verify Community Forge nominee card updated to 1 play · 1 clear (100%)!
+      await page.getByTestId('tab-community').click();
+      await page.getByTestId(`community-stats-${seedId}`).waitFor({ state: 'visible' });
+      const ugcStatsText = await page.getByTestId(`community-stats-${seedId}`).textContent();
+      if (!ugcStatsText?.includes('1 play') || !ugcStatsText.includes('1 clear')) {
+        throw new Error(`Expected live UGC play/clear stats, got "${ugcStatsText}"`);
+      }
+
+      // Open upgraded 3-tab Ranks modal -> Daily Speedrun, Iron Forge Hall, Top Forgers!
+      await page.getByTestId('open-leaderboard-btn').click();
+      await page.getByTestId('leaderboard-self-row').waitFor({ state: 'visible' });
+      await page.getByTestId('ranks-tab-iron').click();
+      await page.getByTestId('iron-leaderboard-table').waitFor({ state: 'visible' });
+      await page.getByTestId('ranks-tab-forgers').click();
+      await page.getByTestId('top-forgers-table').waitFor({ state: 'visible' });
+      await page.getByTestId('top-forgers-self-row').waitFor({ state: 'visible' });
+      const forgersText = await page.getByTestId('top-forgers-table').textContent();
+      if (!forgersText?.includes('u/ThockArchitect') || !forgersText.includes('u/Mindless-Past7833')) {
+        throw new Error(`Top Forgers missing expected creators: ${forgersText}`);
+      }
+      await page.waitForTimeout(120);
+
+      // Capture V5 Screenshot: Upgraded 3-tab Ranks & Top Forgers Modal
+      await page.screenshot({
+        path: path.join(shotsDir, 'after_v5_ranks.png'),
+        fullPage: false,
+      });
+      await page.keyboard.press('Escape');
+
       // Verify sound toggle triggers cleanly without Web Audio autoplay console errors
       await page.getByTestId('toggle-sound-btn').click();
       await page.getByTestId('toggle-sound-btn').click();
@@ -432,6 +510,23 @@ async function main(): Promise<void> {
         );
       }
 
+      // Verify 375x667 first-fold ergonomics: Opening Post + Slot #1 + Slot #2 visible above sticky bar!
+      const mobileFoldCheck = await mobilePage.evaluate(() => {
+        const slot1 = document.querySelector('[data-testid="thread-slot-0"]')?.getBoundingClientRect();
+        const slot2 = document.querySelector('[data-testid="thread-slot-1"]')?.getBoundingClientRect();
+        const bar = document.querySelector('.kf-action-bar')?.getBoundingClientRect();
+        return {
+          slot1Bottom: slot1?.bottom ?? 9999,
+          slot2Top: slot2?.top ?? 9999,
+          barTop: bar?.top ?? 667,
+        };
+      });
+      if (mobileFoldCheck.slot1Bottom > mobileFoldCheck.barTop || mobileFoldCheck.slot2Top >= mobileFoldCheck.barTop) {
+        throw new Error(
+          `375px first-fold regression: expected Slot #1 & Slot #2 visible above sticky bar (${JSON.stringify(mobileFoldCheck)})`,
+        );
+      }
+
       // Screenshot 4: Mobile 375px dark terminal layout
       await mobilePage.screenshot({
         path: path.join(materialsDir, '04_mobile_375px.png'),
@@ -439,6 +534,10 @@ async function main(): Promise<void> {
       });
       await mobilePage.screenshot({
         path: path.join(shotsDir, 'after_mobile_375px.png'),
+        fullPage: false,
+      });
+      await mobilePage.screenshot({
+        path: path.join(shotsDir, 'after_v5_mobile_375px.png'),
         fullPage: false,
       });
 

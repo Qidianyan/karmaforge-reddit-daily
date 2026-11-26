@@ -12,8 +12,13 @@ import type {
 } from '../shared/index.js';
 import {
   buildArchiveList,
+  buildCommunityPlayState,
   buildGameState,
   createCommunityPuzzle,
+  filterIronForgeLeaderboard,
+  handleCommunityGuess,
+  handleCommunityHint,
+  handleCommunityShare,
   handleGuessSubmission,
   handleHintUnlock,
   handleShareComment,
@@ -21,6 +26,7 @@ import {
   readDailyLeaderboard,
   readDailyStats,
   readRecentShares,
+  readTopForgers,
   resolveDateKey,
   toggleCommunityVote,
 } from './service.js';
@@ -108,15 +114,24 @@ export function createKarmaForgeApp(deps: AppDependencies): Express {
 
   app.get('/api/leaderboard', async (req: Request, res: Response) => {
     try {
+      const actor = await bridge.getRequestActor(req);
       const todayUtc = getUtcDateKey();
       const dateParam = typeof req.query.date === 'string' ? req.query.date : undefined;
       const dateKey = resolveDateKey(dateParam, todayUtc);
-      const [stats, leaderboard, recentShares] = await Promise.all([
+      const [stats, fullLeaderboard, recentShares, topForgers] = await Promise.all([
         readDailyStats(store, dateKey),
-        readDailyLeaderboard(store, dateKey),
+        readDailyLeaderboard(store, dateKey, 50),
         readRecentShares(store, dateKey),
+        readTopForgers(store, actor),
       ]);
-      res.json({ dateKey, stats, leaderboard, recentShares });
+      res.json({
+        dateKey,
+        stats,
+        leaderboard: fullLeaderboard.slice(0, 15),
+        ironForgeLeaderboard: filterIronForgeLeaderboard(fullLeaderboard, 15),
+        topForgers,
+        recentShares,
+      });
     } catch (err) {
       sendError(res, err, 400);
     }
@@ -149,6 +164,51 @@ export function createKarmaForgeApp(deps: AppDependencies): Express {
       const body = (req.body ?? {}) as CommunityVoteRequestBody;
       const voted = await toggleCommunityVote(store, actor, body);
       res.json(voted);
+    } catch (err) {
+      sendError(res, err, 400);
+    }
+  });
+
+  app.get('/api/community/play/:puzzleId', async (req: Request, res: Response) => {
+    try {
+      const actor = await bridge.getRequestActor(req);
+      const puzzleId = String(req.params.puzzleId ?? '');
+      const state = await buildCommunityPlayState(store, bridge, actor, puzzleId);
+      res.json(state);
+    } catch (err) {
+      sendError(res, err, 404);
+    }
+  });
+
+  app.post('/api/community/play/:puzzleId/guess', async (req: Request, res: Response) => {
+    try {
+      const actor = await bridge.getRequestActor(req);
+      const puzzleId = String(req.params.puzzleId ?? '');
+      const body = (req.body ?? {}) as GuessRequestBody;
+      const state = await handleCommunityGuess(store, bridge, actor, puzzleId, body);
+      res.json(state);
+    } catch (err) {
+      sendError(res, err, 400);
+    }
+  });
+
+  app.post('/api/community/play/:puzzleId/hint', async (req: Request, res: Response) => {
+    try {
+      const actor = await bridge.getRequestActor(req);
+      const puzzleId = String(req.params.puzzleId ?? '');
+      const state = await handleCommunityHint(store, bridge, actor, puzzleId);
+      res.json(state);
+    } catch (err) {
+      sendError(res, err, 400);
+    }
+  });
+
+  app.post('/api/community/play/:puzzleId/share', async (req: Request, res: Response) => {
+    try {
+      const actor = await bridge.getRequestActor(req);
+      const puzzleId = String(req.params.puzzleId ?? '');
+      const result = await handleCommunityShare(store, bridge, actor, puzzleId);
+      res.json(result);
     } catch (err) {
       sendError(res, err, 400);
     }

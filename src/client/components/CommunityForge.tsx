@@ -13,7 +13,7 @@ import type {
   PuzzleCategory,
   PuzzleDifficulty,
 } from '../../shared/index.js';
-import { AnvilIcon, UpvoteIcon } from './BrandMark.js';
+import { AnvilIcon, PlayIcon, UpvoteIcon } from './BrandMark.js';
 
 interface CommunityForgeProps {
   queue: CommunityForgeListResponse | null;
@@ -22,6 +22,7 @@ interface CommunityForgeProps {
   onRefresh: () => Promise<void>;
   onCreate: (draft: CommunityForgeDraftInput) => Promise<void>;
   onVote: (puzzleId: string) => Promise<void>;
+  onPlay: (puzzleId: string) => Promise<void>;
 }
 
 function makeEmptyCard(defaultTag: string): CommunityForgeCardInput {
@@ -61,12 +62,14 @@ export function CommunityForge({
   onRefresh,
   onCreate,
   onVote,
+  onPlay,
 }: CommunityForgeProps) {
   const [draft, setDraft] = useState<CommunityForgeDraftInput>(() => createBlankDraft());
   const [presetIdx, setPresetIdx] = useState(0);
   const [touchedSubmit, setTouchedSubmit] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [votingId, setVotingId] = useState<string | null>(null);
+  const [playingId, setPlayingId] = useState<string | null>(null);
   const [statusNotice, setStatusNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const validation = useMemo(() => validateCommunityPuzzleDraft(draft), [draft]);
@@ -147,6 +150,22 @@ export function CommunityForge({
     }
   };
 
+  const handlePlayClick = async (puzzleId: string) => {
+    if (playingId) return;
+    setPlayingId(puzzleId);
+    setStatusNotice(null);
+    try {
+      await onPlay(puzzleId);
+    } catch (err) {
+      setStatusNotice({
+        kind: 'err',
+        text: err instanceof Error ? err.message : 'Unable to launch community puzzle.',
+      });
+    } finally {
+      setPlayingId(null);
+    }
+  };
+
   const items = queue?.items ?? [];
 
   return (
@@ -207,6 +226,7 @@ export function CommunityForge({
 
                     <div className="kf-nominee-meta">
                       {isLeader && <span className="kf-leader-tag">#1 Frontrunner</span>}
+                      {item.hasSolved && <span className="kf-cleared-tag">Cleared</span>}
                       <span className="kf-sub-text">{item.subreddit}</span>
                       <span className="kf-meta-tag">{item.category}</span>
                       <span className="kf-meta-tag">{item.difficulty}</span>
@@ -222,9 +242,34 @@ export function CommunityForge({
                       </span>
                     </div>
 
+                    <div className="kf-nominee-actions">
+                      <button
+                        type="button"
+                        className="kf-play-thread-btn"
+                        data-testid={`community-play-${item.id}`}
+                        disabled={playingId === item.id}
+                        onClick={() => void handlePlayClick(item.id)}
+                      >
+                        <PlayIcon />
+                        <span>
+                          {playingId === item.id
+                            ? 'Loading…'
+                            : item.hasSolved
+                              ? 'Replay Result'
+                              : 'Play Thread'}
+                        </span>
+                      </button>
+
+                      <span className="kf-nominee-stats tabular" data-testid={`community-stats-${item.id}`}>
+                        {item.plays ?? 0} play{(item.plays ?? 0) === 1 ? '' : 's'} · {item.clears ?? 0}{' '}
+                        clear{(item.clears ?? 0) === 1 ? '' : 's'}
+                        {(item.plays ?? 0) > 0 ? ` (${item.clearRatePct ?? 0}%)` : ''}
+                      </span>
+                    </div>
+
                     <details className="kf-nominee-details">
                       <summary className="kf-nominee-summary">
-                        Inspect 4-Link blueprint &amp; 2 Trolls
+                        Spoiler: Inspect 4-Link blueprint &amp; 2 Trolls
                       </summary>
                       <div className="kf-nominee-blueprint">
                         <ol className="kf-blueprint-list">

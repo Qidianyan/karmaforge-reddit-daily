@@ -194,17 +194,19 @@ export function computeSpeedCombo(params: {
 
 /**
  * Composite ascending rank score for Redis sorted set leaderboards:
- * primary sort = fewer moves, secondary = faster time, tertiary = fewer hints.
+ * primary sort = Iron Forge ahead of Standard, then fewer moves, faster time, fewer hints.
  */
 export function computeLeaderboardSortKey(params: {
   moves: number;
   elapsedSeconds: number;
   hintsUsed: number;
+  hardMode?: boolean;
 }): number {
+  const modeBand = params.hardMode ? 0 : 1;
   const moves = Math.max(1, Math.min(MAX_ATTEMPTS, params.moves));
   const secs = Math.max(1, Math.min(86399, Math.round(params.elapsedSeconds)));
   const hints = Math.max(0, Math.min(9, params.hintsUsed));
-  return moves * 1_000_000 + secs * 10 + hints;
+  return modeBand * 10_000_000 + moves * 1_000_000 + secs * 10 + hints;
 }
 
 /**

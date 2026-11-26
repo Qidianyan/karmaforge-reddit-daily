@@ -1,12 +1,91 @@
 import { addUtcDays } from './daily.js';
 import type {
+  BridgeCard,
   CommunityForgeCardInput,
   CommunityForgeDraftInput,
   CommunityForgeValidationResult,
   CommunityPuzzleSubmission,
   PuzzleCategory,
+  PuzzleDefinition,
   PuzzleDifficulty,
 } from './types.js';
+
+export const CREATOR_CLEAR_KARMA_BONUS = 50;
+export const CREATOR_VOTE_KARMA_WEIGHT = 10;
+
+/**
+ * Converts a Community Forge UGC submission into a full playable PuzzleDefinition
+ * compatible with KarmaForge's grading engine, Iron Forge rules, and 1-6 speedflow board.
+ */
+export function communitySubmissionToPuzzleDefinition(
+  sub: CommunityPuzzleSubmission,
+): PuzzleDefinition {
+  const linkCards: BridgeCard[] = sub.links.map((lnk, idx) => ({
+    id: `${sub.id}-l${idx + 1}`,
+    subreddit: normalizeSubredditName(lnk.subreddit || sub.subreddit),
+    tag: cleanText(lnk.tag || `Link ${idx + 1}`, 22) || `Link ${idx + 1}`,
+    title: cleanText(lnk.title, 96),
+    summary: cleanText(lnk.summary || lnk.title, 140),
+    isRedHerring: false,
+    debrief: `Link ${idx + 1}: ${cleanText(lnk.summary || lnk.title, 140)}`,
+  }));
+
+  const trollCards: BridgeCard[] = sub.trolls.map((troll, idx) => ({
+    id: `${sub.id}-t${idx + 1}`,
+    subreddit: normalizeSubredditName(troll.subreddit || sub.subreddit),
+    tag: cleanText(troll.tag || 'Red Herring', 22) || 'Red Herring',
+    title: cleanText(troll.title, 96),
+    summary: cleanText(troll.summary || troll.title, 140),
+    isRedHerring: true,
+    debrief: `Red Herring: ${cleanText(troll.summary || troll.title, 140)}`,
+  }));
+
+  const solutionIds: [string, string, string, string] = [
+    linkCards[0]!.id,
+    linkCards[1]!.id,
+    linkCards[2]!.id,
+    linkCards[3]!.id,
+  ];
+
+  const firstLink = linkCards[0]!;
+  const safeAuthor = sub.authorUsername.startsWith('u/')
+    ? sub.authorUsername
+    : `u/${sub.authorUsername}`;
+
+  return {
+    id: sub.id,
+    number: 0,
+    category: sub.category,
+    subreddit: normalizeSubredditName(sub.subreddit),
+    title: sub.title,
+    difficulty: sub.difficulty,
+    openingPost: sub.openingPost,
+    finalePost: sub.finalePost,
+    solutionIds,
+    cards: [
+      linkCards[0]!,
+      linkCards[1]!,
+      linkCards[2]!,
+      linkCards[3]!,
+      trollCards[0]!,
+      trollCards[1]!,
+    ],
+    hints: [
+      {
+        author: safeAuthor,
+        upvotes: String(Math.max(1, sub.votes)),
+        text:
+          sub.hintText ||
+          'Follow the causal handoff from the Opening Post rather than surface keywords.',
+      },
+      {
+        author: 'u/KarmaForgeBot',
+        upvotes: '128',
+        text: `Anchor Link #1 with the ${firstLink.subreddit} (${firstLink.tag}) step and build toward ${sub.finalePost.subreddit}.`,
+      },
+    ],
+  };
+}
 
 export const COMMUNITY_CATEGORIES: readonly PuzzleCategory[] = [
   'Science',
