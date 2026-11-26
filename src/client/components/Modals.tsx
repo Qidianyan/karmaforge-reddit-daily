@@ -65,16 +65,25 @@ export function ResultModal({
 
   const combo = useMemo(() => {
     if (!won) return null;
-    return computeSpeedCombo({
+    const fallback = computeSpeedCombo({
       moves: Math.max(1, progress.attempts.length),
       elapsedSeconds: progress.elapsedSeconds ?? 45,
       hintsUsed: progress.hintsUsed,
       currentStreak: streak.currentStreak,
       hardMode: isHardMode,
     });
+    return {
+      multiplier:
+        typeof progress.comboMultiplier === 'number' && Number.isFinite(progress.comboMultiplier)
+          ? progress.comboMultiplier
+          : fallback.multiplier,
+      tierLabel: progress.comboLabel ?? fallback.tierLabel,
+    };
   }, [
     isHardMode,
     progress.attempts.length,
+    progress.comboLabel,
+    progress.comboMultiplier,
     progress.elapsedSeconds,
     progress.hintsUsed,
     streak.currentStreak,
@@ -138,9 +147,11 @@ export function ResultModal({
             <h3 className="kf-panel-title">Global Crowd Consensus</h3>
             <span
               className={
-                isIronWin
-                  ? 'kf-consensus-pill kf-consensus-pill--iron tabular'
-                  : 'kf-consensus-pill tabular'
+                !won
+                  ? 'kf-consensus-pill kf-consensus-pill--lost tabular'
+                  : isIronWin
+                    ? 'kf-consensus-pill kf-consensus-pill--iron tabular'
+                    : 'kf-consensus-pill tabular'
               }
               data-testid="consensus-percentile-pill"
             >
@@ -154,15 +165,18 @@ export function ResultModal({
                 bucket.pct > 0 ? 6 : 0,
                 Math.round((bucket.pct / maxBucketPct) * 100),
               );
+              const isPlayerLossBucket = bucket.isPlayerBucket && (!won || bucket.key === 'X');
               const fillClass = [
                 'kf-consensus-fill',
-                bucket.isPlayerBucket
-                  ? isIronWin
-                    ? 'kf-consensus-fill--iron'
-                    : 'kf-consensus-fill--you'
-                  : bucket.key === 'X'
-                    ? 'kf-consensus-fill--lost'
-                    : '',
+                isPlayerLossBucket
+                  ? 'kf-consensus-fill--lost-you'
+                  : bucket.isPlayerBucket
+                    ? isIronWin
+                      ? 'kf-consensus-fill--iron'
+                      : 'kf-consensus-fill--you'
+                    : bucket.key === 'X'
+                      ? 'kf-consensus-fill--lost'
+                      : '',
               ]
                 .filter(Boolean)
                 .join(' ');
@@ -188,9 +202,11 @@ export function ResultModal({
                     {bucket.isPlayerBucket && (
                       <span
                         className={
-                          isIronWin
-                            ? 'kf-consensus-you-tag kf-consensus-you-tag--iron'
-                            : 'kf-consensus-you-tag'
+                          isPlayerLossBucket
+                            ? 'kf-consensus-you-tag kf-consensus-you-tag--lost'
+                            : isIronWin
+                              ? 'kf-consensus-you-tag kf-consensus-you-tag--iron'
+                              : 'kf-consensus-you-tag'
                         }
                       >
                         YOU

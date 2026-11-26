@@ -2036,6 +2036,12 @@ summary:focus-visible,
   color: var(--kf-amber-ink);
 }
 
+.kf-consensus-pill--lost {
+  background: var(--kf-flame-tint);
+  border-color: var(--kf-flame);
+  color: var(--kf-flame-ink);
+}
+
 .kf-consensus-bars {
   display: flex;
   flex-direction: column;
@@ -2093,6 +2099,10 @@ summary:focus-visible,
   background: var(--kf-troll-border);
 }
 
+.kf-consensus-fill--lost-you {
+  background: var(--kf-flame);
+}
+
 .kf-consensus-pct {
   display: inline-flex;
   align-items: center;
@@ -2119,6 +2129,11 @@ summary:focus-visible,
 
 .kf-consensus-you-tag--iron {
   background: var(--kf-amber);
+  color: var(--kf-on-accent);
+}
+
+.kf-consensus-you-tag--lost {
+  background: var(--kf-flame);
   color: var(--kf-on-accent);
 }
 

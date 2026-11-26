@@ -372,6 +372,10 @@ const BUCKET_META: ReadonlyArray<{ key: CrowdConsensusBucket['key']; label: stri
   { key: 'X', label: 'Locked' },
 ];
 
+function safeNonNegInt(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
 /**
  * Computes Global Crowd Consensus move histogram & deterministic "Sharper than XX% of r/KarmaForge"
  * percentile by blending real Redis telemetry with calibrated cold-start priors.
@@ -385,15 +389,15 @@ export function computeCrowdConsensus(params: {
   playerElapsedSeconds: number | null;
   playerHardMode?: boolean;
 }): CrowdConsensusSummary {
-  const prior = CROWD_PRIORS_BY_DIFFICULTY[params.difficulty];
+  const prior = CROWD_PRIORS_BY_DIFFICULTY[params.difficulty] ?? CROWD_PRIORS_BY_DIFFICULTY.Spicy;
   const dist = params.liveDistribution ?? EMPTY_MOVE_DISTRIBUTION;
   const liveCounts = [
-    Math.max(0, Math.floor(dist.moves1)),
-    Math.max(0, Math.floor(dist.moves2)),
-    Math.max(0, Math.floor(dist.moves3)),
-    Math.max(0, Math.floor(dist.moves4)),
-    Math.max(0, Math.floor(dist.moves5)),
-    Math.max(0, Math.floor(dist.losses)),
+    safeNonNegInt(dist.moves1),
+    safeNonNegInt(dist.moves2),
+    safeNonNegInt(dist.moves3),
+    safeNonNegInt(dist.moves4),
+    safeNonNegInt(dist.moves5),
+    safeNonNegInt(dist.losses),
   ];
 
   const priorSampleSize = prior.reduce((acc, v) => acc + v, 0);
@@ -401,9 +405,10 @@ export function computeCrowdConsensus(params: {
   const blended = prior.map((p, idx) => p + (liveCounts[idx] ?? 0));
   const totalBlended = Math.max(1, blended.reduce((acc, v) => acc + v, 0));
 
+  const safeMoves = Number.isFinite(params.playerMoves) ? Math.round(params.playerMoves) : 1;
   const playerBucketIdx =
     params.playerStatus === 'won'
-      ? Math.max(0, Math.min(4, Math.round(params.playerMoves) - 1))
+      ? Math.max(0, Math.min(4, safeMoves - 1))
       : params.playerStatus === 'lost'
         ? 5
         : -1;
@@ -428,7 +433,11 @@ export function computeCrowdConsensus(params: {
     for (let idx = playerBucketIdx + 1; idx < blended.length; idx += 1) {
       worseCount += blended[idx] ?? 0;
     }
-    const clampedElapsed = Math.max(5, Math.min(120, params.playerElapsedSeconds ?? 45));
+    const rawElapsed =
+      typeof params.playerElapsedSeconds === 'number' && Number.isFinite(params.playerElapsedSeconds)
+        ? params.playerElapsedSeconds
+        : 45;
+    const clampedElapsed = Math.max(5, Math.min(120, rawElapsed));
     const ironTieBoost = params.playerHardMode ? 0.12 : 0;
     const withinBucketFraction = Math.max(
       0.15,
@@ -449,7 +458,7 @@ export function computeCrowdConsensus(params: {
     headline,
     liveSampleSize,
     priorSampleSize,
-    ironForgeSolves: Math.max(0, Math.floor(params.ironForgeSolves ?? 0)),
+    ironForgeSolves: safeNonNegInt(params.ironForgeSolves),
   };
 }
 

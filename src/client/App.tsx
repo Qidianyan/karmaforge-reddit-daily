@@ -585,9 +585,12 @@ export function App() {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
 
       const target = event.target as HTMLElement | null;
+      const isTextInput =
+        target?.tagName === 'INPUT' &&
+        !['checkbox', 'radio', 'button'].includes((target as HTMLInputElement).type);
       if (
         target &&
-        (target.tagName === 'INPUT' ||
+        (isTextInput ||
           target.tagName === 'TEXTAREA' ||
           target.tagName === 'SELECT' ||
           target.isContentEditable)

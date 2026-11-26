@@ -189,6 +189,18 @@ async function main(): Promise<void> {
         throw new Error(`Expected Iron Forge 0/3 label after toggle, got "${attemptsLabelText}"`);
       }
 
+      // Regression check: keyboard shortcuts (1 + z) still work immediately while Iron Forge switch holds focus!
+      await page.keyboard.press('1');
+      await page.waitForTimeout(60);
+      const forgeTextAfterFocusedKey = await page.getByTestId('forge-submit-btn').textContent();
+      if (!forgeTextAfterFocusedKey?.includes('(1/4)')) {
+        throw new Error(
+          `Expected key '1' to place card while Iron Forge checkbox focused; got "${forgeTextAfterFocusedKey}"`,
+        );
+      }
+      await page.keyboard.press('z');
+      await page.waitForTimeout(60);
+
       // Compute exact card IDs for today's UTC puzzle to execute both a partial guess AND winning solve.
       const todayUtc = getUtcDateKey();
       const { puzzle } = getPuzzleForDate(todayUtc);

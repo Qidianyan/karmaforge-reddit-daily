@@ -999,6 +999,30 @@ describe('KarmaForge V4 · Iron Forge Hard Mode, Crowd Consensus & Micro-Guidanc
     });
     expect(lossSummary.sharperThanPct).toBe(0);
     expect(lossSummary.headline).toContain('r/KarmaForge');
+
+    // NaN / negative / Infinity telemetry values never poison percentile or bucket percentages
+    const corrupted = computeCrowdConsensus({
+      difficulty: 'Mild',
+      liveDistribution: {
+        moves1: Number.NaN,
+        moves2: -10,
+        moves3: Number.POSITIVE_INFINITY,
+        moves4: 0,
+        moves5: 0,
+        losses: Number.NaN,
+      },
+      ironForgeSolves: Number.NaN,
+      playerStatus: 'won',
+      playerMoves: Number.NaN,
+      playerElapsedSeconds: Number.NaN,
+      playerHardMode: true,
+    });
+    expect(Number.isFinite(corrupted.sharperThanPct)).toBe(true);
+    expect(corrupted.sharperThanPct).toBeGreaterThanOrEqual(1);
+    expect(corrupted.sharperThanPct).toBeLessThanOrEqual(99);
+    expect(corrupted.liveSampleSize).toBe(0);
+    expect(corrupted.ironForgeSolves).toBe(0);
+    expect(corrupted.buckets.every((b) => Number.isFinite(b.pct))).toBe(true);
   });
 
   it('controls 3-second micro-guidance visibility and one-shot dismissal across first action and persistence', () => {
