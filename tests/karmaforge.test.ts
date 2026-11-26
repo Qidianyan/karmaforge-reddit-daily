@@ -1516,5 +1516,13 @@ describe('KarmaForge V5 · Playable UGC Playground, Dual Ranks & Creator Reputat
     for (let i = 1; i < forgers.length; i += 1) {
       expect(forgers[i - 1]!.creatorKarma).toBeGreaterThanOrEqual(forgers[i]!.creatorKarma);
     }
+
+    // Cross-midnight persistence: Creator Karma & thread remain ranked on the next UTC day!
+    const nextDay = new Date('2026-11-26T02:00:00.000Z');
+    const nextDayForgers = await readTopForgers(store, creator, nextDay);
+    const persistedLegend = nextDayForgers.find((f) => f.username === 'u/ForgeLegend');
+    expect(persistedLegend).toBeDefined();
+    expect(persistedLegend?.totalClears).toBe(1);
+    expect(persistedLegend?.creatorKarma).toBeGreaterThanOrEqual(CREATOR_CLEAR_KARMA_BONUS);
   });
 });

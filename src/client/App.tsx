@@ -146,9 +146,13 @@ export function App() {
   const dragCardRef = useRef<{ cardId: string; fromSlot: number | null } | null>(null);
   const timerStartRef = useRef<number>(Date.now());
   const communitySeqRef = useRef<number>(0);
+  const ranksSeqRef = useRef<number>(0);
 
   const syncFromState = useCallback((next: GameStateResponse, isFreshSubmission = false) => {
     setState(next);
+    if (!next.communityMeta) {
+      setRanksSnapshot(null);
+    }
     setShareNotice(null);
     setSlotHistory([]);
 
@@ -172,6 +176,11 @@ export function App() {
       setActiveSlot(findFirstOpenUnlockedSlot(displaySlots, known.lockedSlots));
       if (next.progress.elapsedSeconds !== null) {
         setElapsedSeconds(next.progress.elapsedSeconds);
+      } else if (!isFreshSubmission && next.progress.status === 'playing') {
+        const startedMs = Date.parse(next.progress.startedAt);
+        const safeStart = Number.isFinite(startedMs) && startedMs <= Date.now() ? startedMs : Date.now();
+        timerStartRef.current = safeStart;
+        setElapsedSeconds(Math.max(1, Math.floor((Date.now() - safeStart) / 1000)));
       }
     } else {
       setSlots([null, null, null, null]);
@@ -768,9 +777,12 @@ export function App() {
   const handleOpenLeaderboard = useCallback(async () => {
     setLeaderboardModalOpen(true);
     if (!state) return;
+    const seq = ++ranksSeqRef.current;
+    const targetDate = state.communityMeta ? state.todayUtc : state.activeDateKey;
+    setRanksSnapshot((prev) => (prev && prev.dateKey === targetDate ? prev : null));
     try {
-      const targetDate = state.communityMeta ? state.todayUtc : state.activeDateKey;
       const data = await fetchLeaderboard(targetDate);
+      if (seq !== ranksSeqRef.current) return;
       setRanksSnapshot(data);
       setState((prev) =>
         prev

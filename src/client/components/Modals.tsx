@@ -419,7 +419,9 @@ export function LeaderboardModal({
           <span className="kf-stat-lbl">Solve Rate</span>
         </div>
         <div className="kf-stat-box">
-          <span className="kf-stat-val kf-stat-val--flame tabular">{ironForgeLeaderboard.length}</span>
+          <span className="kf-stat-val kf-stat-val--flame tabular">
+            {stats.ironForgeSolves ?? ironForgeLeaderboard.length}
+          </span>
           <span className="kf-stat-lbl">Iron Clears</span>
         </div>
         <div className="kf-stat-box">

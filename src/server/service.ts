@@ -770,10 +770,39 @@ export async function readTopForgers(
   now: Date = new Date(),
   limit = 15,
 ): Promise<CreatorLeaderboardEntry[]> {
-  const [queue, storedKarmaHash] = await Promise.all([
+  const [queue, allStoredHash, storedKarmaHash] = await Promise.all([
     listCommunityPuzzles(store, actor, now),
+    store.hGetAll(communityAllPuzzlesKey()),
     store.hGetAll(creatorKarmaKey()),
   ]);
+
+  const seenPuzzleIds = new Set<string>(queue.items.map((item) => item.id));
+  const combinedItems: CommunityPuzzleSubmission[] = [...queue.items];
+
+  // Include historical user-authored puzzles persisted across UTC midnight rollovers.
+  const historicalRaw = Object.entries(allStoredHash).filter(([id]) => !seenPuzzleIds.has(id));
+  if (historicalRaw.length > 0) {
+    const historicalHydrated = await Promise.all(
+      historicalRaw.map(async ([id, raw]) => {
+        try {
+          const parsed = JSON.parse(raw) as CommunityPuzzleSubmission;
+          if (!parsed || !parsed.id || !parsed.authorUsername) return null;
+          const metrics = await readCommunityPuzzleMetrics(store, id);
+          return {
+            ...parsed,
+            plays: metrics.plays,
+            clears: metrics.clears,
+            clearRatePct: metrics.clearRatePct,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const item of historicalHydrated) {
+      if (item) combinedItems.push(item);
+    }
+  }
 
   const byAuthor = new Map<
     string,
@@ -785,7 +814,7 @@ export async function readTopForgers(
     }
   >();
 
-  for (const item of queue.items) {
+  for (const item of combinedItems) {
     const prev = byAuthor.get(item.authorUsername) ?? {
       puzzlesCount: 0,
       totalVotes: 0,
@@ -793,15 +822,27 @@ export async function readTopForgers(
       totalClears: 0,
     };
     prev.puzzlesCount += 1;
-    prev.totalVotes += item.votes;
-    prev.totalPlays += item.plays ?? 0;
-    prev.totalClears += item.clears ?? 0;
+    prev.totalVotes += Math.max(0, item.votes);
+    prev.totalPlays += Math.max(0, item.plays ?? 0);
+    prev.totalClears += Math.max(0, item.clears ?? 0);
     byAuthor.set(item.authorUsername, prev);
+  }
+
+  for (const [username, rawKarma] of Object.entries(storedKarmaHash)) {
+    const karmaNum = Number.parseInt(rawKarma ?? '0', 10) || 0;
+    if (karmaNum > 0 && !byAuthor.has(username)) {
+      byAuthor.set(username, {
+        puzzlesCount: 1,
+        totalVotes: 0,
+        totalPlays: 0,
+        totalClears: Math.floor(karmaNum / CREATOR_CLEAR_KARMA_BONUS),
+      });
+    }
   }
 
   const rows: Omit<CreatorLeaderboardEntry, 'rank'>[] = Array.from(byAuthor.entries()).map(
     ([username, agg]) => {
-      const persistedClearKarma = Number.parseInt(storedKarmaHash[username] ?? '0', 10) || 0;
+      const persistedClearKarma = Math.max(0, Number.parseInt(storedKarmaHash[username] ?? '0', 10) || 0);
       const clearKarma = Math.max(
         persistedClearKarma,
         agg.totalClears * CREATOR_CLEAR_KARMA_BONUS,
